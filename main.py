@@ -34,6 +34,11 @@ def _parse_args() -> argparse.Namespace:
         default=2048,
         help="Max output tokens per call (default: 2048)",
     )
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Run without LLM calls: write empty condition summaries (schema-valid) for wiring tests.",
+    )
     return p.parse_args()
 
 
@@ -50,10 +55,12 @@ def main() -> int:
     if not patient_ids:
         raise SystemExit("Patient list is empty.")
 
-    llm_cfg = load_llm_config_from_env(
-        temperature=float(args.temperature), max_output_tokens=int(args.max_output_tokens)
-    )
-    llm = OpenAICompatibleClient(llm_cfg)
+    llm = None
+    if not args.dry_run:
+        llm_cfg = load_llm_config_from_env(
+            temperature=float(args.temperature), max_output_tokens=int(args.max_output_tokens)
+        )
+        llm = OpenAICompatibleClient(llm_cfg)
 
     cfg = InferenceConfig(
         data_dir=data_dir,
@@ -64,7 +71,16 @@ def main() -> int:
 
     output_dir.mkdir(parents=True, exist_ok=True)
     for pid in tqdm(patient_ids, desc="Processing patients"):
-        run_patient(llm=llm, patient_id=pid, cfg=cfg)
+        if args.dry_run:
+            # Schema-valid empty output for integration testing without API access.
+            out_path = output_dir / f"{pid}.json"
+            out_path.write_text(
+                json.dumps({"patient_id": pid, "conditions": []}, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        else:
+            assert llm is not None
+            run_patient(llm=llm, patient_id=pid, cfg=cfg)
 
     # Write a small manifest for convenience (not used in evaluation).
     (output_dir / "_manifest.json").write_text(
@@ -75,6 +91,7 @@ def main() -> int:
                 "taxonomy_path": str(taxonomy_path),
                 "model": os.getenv("OPENAI_MODEL"),
                 "patients": patient_ids,
+                "dry_run": bool(args.dry_run),
             },
             ensure_ascii=False,
             indent=2,

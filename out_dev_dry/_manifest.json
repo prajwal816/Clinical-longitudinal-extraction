@@ -1,0 +1,12 @@
+{
+  "data_dir": "clinical_nlp_assignment\\dev",
+  "patient_list": "patients_dev.json",
+  "taxonomy_path": "C:\\Stored\\All Files\\Coding\\Projects\\NLP-Assignment\\clinical_nlp_assignment\\taxonomy.json",
+  "model": null,
+  "patients": [
+    "patient_02",
+    "patient_08",
+    "patient_15"
+  ],
+  "dry_run": true
+}
