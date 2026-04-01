@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -31,8 +32,19 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--max-output-tokens",
         type=int,
-        default=2048,
-        help="Max output tokens per call (default: 2048)",
+        default=4096,
+        help="Max output tokens per call (default: 4096)",
+    )
+    p.add_argument(
+        "--concurrency",
+        type=int,
+        default=4,
+        help="Number of concurrent per-note extraction threads (default: 4)",
+    )
+    p.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable debug logging for detailed output.",
     )
     p.add_argument(
         "--dry-run",
@@ -44,6 +56,11 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = _parse_args()
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
 
     data_dir = Path(args.data_dir)
     patient_list_path = Path(args.patient_list)
@@ -67,6 +84,7 @@ def main() -> int:
         taxonomy_path=taxonomy_path,
         output_dir=output_dir,
         cache_dir=cache_dir,
+        concurrency=int(args.concurrency),
     )
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -82,6 +100,10 @@ def main() -> int:
             assert llm is not None
             run_patient(llm=llm, patient_id=pid, cfg=cfg)
 
+    # Token usage summary
+    if llm is not None:
+        print(f"\n{llm.token_summary()}")
+
     # Write a small manifest for convenience (not used in evaluation).
     (output_dir / "_manifest.json").write_text(
         json.dumps(
@@ -92,6 +114,7 @@ def main() -> int:
                 "model": os.getenv("OPENAI_MODEL"),
                 "patients": patient_ids,
                 "dry_run": bool(args.dry_run),
+                "concurrency": int(args.concurrency),
             },
             ensure_ascii=False,
             indent=2,
@@ -105,4 +128,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

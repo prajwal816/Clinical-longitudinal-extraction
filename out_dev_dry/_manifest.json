@@ -8,5 +8,6 @@
     "patient_08",
     "patient_15"
   ],
-  "dry_run": true
+  "dry_run": true,
+  "concurrency": 4
 }
