@@ -57,7 +57,13 @@ def run_patient(
                 for note in notes
             }
             for future in as_completed(futures):
-                note_id, conds = future.result()
+                nid = futures[future]
+                try:
+                    note_id, conds = future.result()
+                except Exception:
+                    logger.error("Failed to extract conditions from %s/%s", patient_id, nid, exc_info=True)
+                    note_conditions[nid] = []
+                    continue
                 note_conditions[note_id] = conds
                 logger.info("  %s: extracted %d conditions", note_id, len(conds))
     else:
