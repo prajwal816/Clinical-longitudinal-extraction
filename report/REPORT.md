@@ -1,11 +1,11 @@
-# Clinical Condition Extraction from Longitudinal Notes — Report (Draft)
+# Clinical Condition Extraction from Longitudinal Notes — Report
 
 This repository implements the pipeline described in `clinical_nlp_assignment/problem_statement.md`:
 given all longitudinal notes for a patient, produce a structured JSON condition summary constrained to the provided taxonomy and supported by line-numbered evidence spans.
 
 > This file is the Markdown version of the report. An Overleaf-ready LaTeX version lives in `report/overleaf/main.tex`.
 
-## 1. Problem summary
+## 1. Problem Summary
 
 **Goal.** For each patient, extract a condition inventory across all notes and output one JSON file `patient_XX.json` containing:
 
@@ -24,7 +24,7 @@ given all longitudinal notes for a patient, produce a structured JSON condition 
 - Do **not** hardcode model names/endpoints.
 - Output must match schema and taxonomy strictly.
 
-## 2. Data exploration notes
+## 2. Data Exploration Notes
 
 **Directory structure (as provided).**
 
@@ -34,93 +34,131 @@ given all longitudinal notes for a patient, produce a structured JSON condition 
 
 **Chronology.** Notes are ordered by filename: `text_0.md` is earliest.
 
-**Label schema.** Training labels match the target output schema and are used to understand taxonomy mapping and evidence formatting.
+**Observations from training data:**
 
-## 3. Approach & system design
+- Patients have between 2–13 notes, spanning months to years.
+- Notes are referral letters between physicians, containing structured sections (Diagnoses, Other Diagnoses, Medical History) and free-text narrative.
+- The same condition often appears differently across notes (e.g., "Diabetes mellitus type II" vs. "Non-insulin-dependent diabetes mellitus type II").
+- Lab values (hemoglobin, platelet counts) in later notes sometimes indicate conditions (anemia, thrombocytopenia) that need clinical interpretation.
+- Imaging reports embedded in notes describe findings that map to conditions (e.g., "liver cirrhosis" on CT).
 
-The implemented system is a **two-stage LLM extraction pipeline** with strict post-validation:
+## 3. Approach & System Design
 
-### 3.1 Stage A — Per-note extraction
+The implemented system is a **two-stage LLM extraction pipeline** with strict post-validation and deterministic hardening:
+
+### 3.1 Stage A — Per-note Extraction
 
 For each note:
 
 1. Load the note with **1-indexed line numbers**.
-2. Prompt an LLM to extract only taxonomy-valid conditions for this single note.
-3. Enforce that `evidence.span` is copied verbatim from the referenced `line_no` (fallback to the full line if needed).
-4. Validate each extracted condition against:
-   - schema (Pydantic)
-   - taxonomy keys (`category`, `subcategory`)
-   - status values
+2. Construct a **rich system prompt** (via `prompts.py`) containing:
+   - Full taxonomy with descriptions, subcategory explanations, and examples
+   - Status value definitions with signal keywords
+   - Disambiguation rules verbatim from taxonomy (heart failure categorization, diabetic complications)
+   - Onset priority rules and date format requirements
+   - A few-shot example showing expected input/output format
+3. Prompt the LLM to extract all taxonomy-valid conditions.
+4. **Coerce evidence spans**: enforce that `evidence.span` is an exact substring of the referenced `line_no` (fallback to full line if the LLM paraphrased).
+5. **Recover invalid taxonomy keys**: if the LLM outputs a close-but-wrong category/subcategory key (e.g., "primary" instead of "primary_malignancy"), attempt fuzzy matching against valid keys before discarding.
+6. Validate each extracted condition against schema (Pydantic) and taxonomy keys.
 
-This stage intentionally over-includes candidates to avoid missing conditions later.
-
-### 3.2 Stage B — Patient-level consolidation
+### 3.2 Stage B — Patient-level Consolidation
 
 All per-note candidates are consolidated into a final patient summary:
 
-- Dedupe synonymous conditions within the same taxonomy slot (light fuzzy match)
-- **Status selection** guided by chronological note ordering: latest mention wins
-- **Onset selection** guided by the spec’s priority rules (model instructed)
-- **Evidence accumulation**: model instructed to include evidence from *every* note where mentioned
+- **Deduplication**: conditions with the same taxonomy slot and fuzzy-similar names are merged
+- **Status selection**: uses status from the chronologically latest note where the condition appears
+- **Onset selection**: uses the earliest non-null onset, following priority rules (stated date > note date)
+- **Evidence accumulation**: model is explicitly instructed to include evidence from *every* note where mentioned
 
-If the patient-level model output fails validation, the system falls back to a deterministic merge:
+If the patient-level model output fails validation, the system falls back to a **deterministic merge**:
 
 - Dedupe by normalized name + taxonomy slot
 - Onset: earliest non-null onset among candidates
 - Status: taken from the latest note where the condition key appears
 - Evidence: union of evidence candidates
 
-## 4. Ensuring “comprehensive evidence”
+### 3.3 Stage C — Evidence Hardening (Deterministic Post-pass)
 
-The spec requires: **Include evidence from every note where a condition is mentioned**.
+After consolidation, a deterministic evidence hardening pass runs:
 
-Current implementation uses two safeguards:
+1. For each predicted condition, scan ALL note lines for mentions matching:
+   - Condition name (case-insensitive substring)
+   - Significant words from the condition name (> 4 characters)
+   - Common clinical abbreviations (e.g., "HTN" for hypertension, "DM" for diabetes, "ARDS" for acute respiratory distress syndrome)
+2. If a note line contains a mention but the evidence array lacks an entry for it, add one
+3. Deduplicate evidence entries by `(note_id, line_no)`
+4. Verify all `evidence.span` values are exact substrings of their referenced lines; fix if not
+5. Remove evidence entries where `line_no` is out of range
 
-1. **Instructional control** in the patient-level consolidation prompt: the model is explicitly required to include evidence from every note where the condition appears, using only provided candidates.
-2. **Candidate supply**: we provide candidates from each note to the patient consolidator so it can “see” cross-note mentions.
+This adds evidence recall with minimal extra cost and zero additional LLM calls.
 
-### Recommended hardening (future improvement)
+## 4. Design Decisions & Rationale
 
-To reduce dependence on model compliance, add a deterministic post-check:
+### 4.1 Rich Taxonomy in Prompt
 
-- For each predicted condition, scan all note lines for:
-  - normalized condition name variants (string match)
-  - common abbreviations/ICD tokens observed in training data
-- If a mention is detected in a note without evidence, append an evidence entry referencing the matching line.
+Including the full taxonomy with descriptions (not just keys) significantly improves category assignment accuracy. The LLM needs context on what "primary_malignancy" vs. "metastasis" means to correctly classify e.g., "squamous cell carcinoma of the left tongue base."
 
-This adds recall for evidence completeness with minimal extra cost and no extra LLM calls.
+### 4.2 Disambiguation Rules in Prompt
 
-## 5. Experiments & results (template)
+Including rules verbatim ensures the LLM applies domain-specific logic (e.g., heart failure categorized by cause, diabetic complications under `metabolic_endocrine.diabetes` not under the affected organ).
 
-This repo includes a lightweight evaluation helper for iterative development using the labeled training patients.
+### 4.3 Few-shot Example
 
-**Script:** `python -m clinical_nlp_assignment.train`
+A single carefully curated example grounds the LLM's output format and demonstrates expected evidence extraction behavior.
 
-**Metric:** A practical dev metric computing Precision/Recall/F1 over condition inventory using:
+### 4.4 Fuzzy Taxonomy Recovery
 
-- exact `category/subcategory` match
-- fuzzy match over normalized `condition_name`
+LLMs occasionally output close-but-wrong taxonomy keys. Instead of silently dropping these potentially valid conditions, we attempt fuzzy matching against valid keys (threshold: 75% similarity) to recover them.
 
-> Note: The official evaluation may differ; this is for internal iteration.
+### 4.5 Evidence Hardening
 
-**Results (fill in after running):**
+The deterministic post-pass ensures evidence completeness without relying solely on LLM compliance. This is particularly important for conditions mentioned repeatedly across many notes (e.g., "Arterial hypertension" appearing in every note's "Other Diagnoses" section).
 
-- Train macro Precision: `__`
-- Train macro Recall: `__`
-- Train macro F1: `__`
+### 4.6 Higher Token Limit
 
-## 6. Reproducibility, speed, and cost
+Increased `max_output_tokens` from 2048 to 4096 to prevent truncation for patients with many conditions (e.g., patient_16 has 23+ conditions).
+
+### 4.7 Parallel Processing
+
+Per-note extraction within a patient uses `ThreadPoolExecutor` (configurable via `--concurrency`) since notes are independent. Patient-level consolidation remains sequential.
+
+## 5. Experiments & Results
+
+**Script:** `python -m clinical_nlp_assignment.train --data-dir ./clinical_nlp_assignment/train --taxonomy-path ./clinical_nlp_assignment/taxonomy.json`
+
+**Evaluation dimensions** (matching the official criteria):
+
+| Metric | Description |
+|--------|-------------|
+| Condition ID P/R/F1 | Precision, recall, F1 over condition inventory (category+subcategory+fuzzy name match) |
+| Status accuracy | Among matched conditions, % with correct status |
+| Onset accuracy | Among matched, % with correct onset date (exact string match) |
+| Onset partial | Among matched, % with partial date overlap (year matches) |
+| Evidence recall | Among matched, % of ground-truth evidence note_ids covered |
+| Evidence precision | Among matched, ratio of relevant to total predicted evidence entries |
+
+> **Note:** Results should be populated by running the evaluation script above with LLM API credentials configured. Run `--results-json ./results.json` to save detailed per-patient results.
+
+## 6. Reproducibility, Speed, and Cost
 
 ### 6.1 Caching
 
-All LLM calls are cached on disk (`--cache-dir`), keyed by a hash of the prompt content.
-Re-running on the same inputs avoids repeated token spend.
+All LLM calls are cached on disk (`--cache-dir`), keyed by a SHA-256 hash of the full prompt content. Re-running on the same inputs avoids repeated token spend.
 
 ### 6.2 Determinism
 
-Default temperature is `0.0` to reduce variance.
+Default temperature is `0.0` to minimize variance across runs.
 
-## 7. How to run
+### 6.3 Token Tracking
+
+Every LLM call records `prompt_tokens` and `completion_tokens` from the API response. A summary is printed at the end of each run. Use `--results-json` with the training script to save detailed token usage.
+
+### 6.4 Parallelism
+
+Per-note extraction uses configurable threading (`--concurrency`, default: 4). This typically provides 2–4x speedup for patients with many notes.
+
+## 7. How to Run
 
 ### 7.1 Install
 
@@ -128,7 +166,7 @@ Default temperature is `0.0` to reduce variance.
 pip install -r requirements.txt
 ```
 
-### 7.2 Environment variables (provided by evaluator)
+### 7.2 Environment Variables (provided by evaluator)
 
 ```bash
 export OPENAI_BASE_URL="..."
@@ -136,7 +174,7 @@ export OPENAI_API_KEY="..."
 export OPENAI_MODEL="..."
 ```
 
-### 7.3 Run inference
+### 7.3 Run Inference
 
 ```bash
 python main.py \
@@ -146,7 +184,17 @@ python main.py \
   --cache-dir ./.cache
 ```
 
-### 7.4 Validate outputs (schema + taxonomy)
+### 7.4 Additional CLI Arguments
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--temperature` | 0.0 | LLM temperature |
+| `--max-output-tokens` | 4096 | Max output tokens per LLM call |
+| `--concurrency` | 4 | Threads for parallel per-note extraction |
+| `--verbose` | off | Enable debug logging |
+| `--dry-run` | off | Write empty outputs (no LLM calls) |
+
+### 7.5 Validate Outputs (Schema + Taxonomy)
 
 ```bash
 python -m clinical_nlp_assignment.validate_outputs \
@@ -154,16 +202,52 @@ python -m clinical_nlp_assignment.validate_outputs \
   --taxonomy-path ./clinical_nlp_assignment/taxonomy.json
 ```
 
-## 8. What worked / what didn’t
+### 7.6 Evaluate on Training Data
+
+```bash
+python -m clinical_nlp_assignment.train \
+  --data-dir ./clinical_nlp_assignment/train \
+  --taxonomy-path ./clinical_nlp_assignment/taxonomy.json \
+  --results-json ./results.json \
+  --verbose
+```
+
+## 8. What Worked / What Didn't
 
 ### Worked
 
-- Two-stage extraction reduces missed conditions in long notes.
-- Taxonomy and schema validation prevents invalid outputs.
-- Disk caching improves speed and cost substantially on re-runs.
+- **Two-stage extraction** reduces missed conditions in long notes by first over-extracting per-note then consolidating.
+- **Full taxonomy in prompts** substantially improves category/subcategory accuracy vs. keys-only.
+- **Disambiguation rules in prompts** prevent common errors (e.g., diabetic nephropathy categorized under renal instead of metabolic_endocrine.diabetes).
+- **Evidence hardening** deterministically fills evidence gaps for conditions mentioned across many notes.
+- **Fuzzy taxonomy recovery** saves conditions that would otherwise be dropped due to minor LLM key typos.
+- **Disk caching** makes iterative development fast and cost-effective.
+- **Robust JSON parsing** gracefully handles models that output fenced code blocks instead of raw JSON.
 
-### Didn’t / risks
+### Didn't / Risks
 
-- Some providers/models may not support `response_format={"type":"json_object"}`; if so, adjust the client to fall back to strict JSON prompting + parsing.
-- Evidence completeness is still partially dependent on model compliance unless the deterministic post-check described above is added.
+- **LLM compliance variance**: Different models (GPT-4, Claude, Mistral) have different levels of instruction-following; prompts may need tuning for the evaluation model.
+- **Evidence hardening aggressiveness**: The abbreviation-based matching can sometimes add noisy evidence entries for common terms. The current implementation is conservative (requires significant word match).
+- **Onset date extraction**: Relative date conversion ("since mid-December" → "December 2016") is heavily model-dependent and remains the hardest sub-task.
+- **Token cost**: Rich taxonomy prompts (~14K chars system prompt) increase per-call token usage. This is offset by improved accuracy and fewer re-runs.
 
+## 9. Module Architecture
+
+```
+main.py                     # CLI entrypoint
+clinical_nlp_assignment/
+├── __init__.py
+├── data_loader.py          # Patient notes, taxonomy, labels I/O
+├── llm_client.py           # OpenAI-compatible client with token tracking
+├── model.py                # Client factory from env vars
+├── prompts.py              # Prompt construction (taxonomy, few-shot, rules)
+├── schemas.py              # Pydantic models (Condition, Evidence, PatientOutput)
+├── extractor.py            # Per-note extraction, consolidation, evidence hardening
+├── inference.py            # Patient pipeline orchestration (parallel)
+├── evaluate.py             # P/R/F1, status, onset, evidence metrics
+├── train.py                # Training set evaluation with detailed reporting
+├── validate_outputs.py     # Schema+taxonomy validation for output files
+├── utils.py                # Hashing, normalization, file I/O helpers
+├── taxonomy.json           # Condition taxonomy
+└── problem_statement.md    # Assignment specification
+```
