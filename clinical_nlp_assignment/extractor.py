@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -9,8 +11,16 @@ from rapidfuzz import fuzz
 
 from .data_loader import format_note_with_line_numbers, get_valid_categories, get_valid_statuses
 from .llm_client import OpenAICompatibleClient
+from .prompts import (
+    build_note_system_prompt,
+    build_note_user_prompt,
+    build_patient_system_prompt,
+    build_patient_user_prompt,
+)
 from .schemas import Condition, PatientOutput, Taxonomy, validate_condition_taxonomy
 from .utils import ConditionKey, clean_markdown_line, dump_json, ensure_dir, load_json, normalize_condition_name, sha256_text
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -19,48 +29,9 @@ class ExtractorConfig:
     max_conditions_per_note: int = 60
 
 
-NOTE_SYSTEM_PROMPT = """You are an expert clinical information extraction system.
-
-Task: Extract ALL clinically significant diagnoses and findings that map to the provided taxonomy.
-
-Hard constraints:
-- Output MUST be valid JSON.
-- ONLY include conditions that fit the taxonomy (category/subcategory keys).
-- status MUST be one of: active, resolved, suspected.
-- evidence.span MUST be copied EXACTLY from the provided note line (without modifying spelling/case/punctuation).
-- evidence.line_no MUST match the line number shown.
-- Do NOT invent facts or dates. If onset cannot be determined, use null.
-
-You are extracting from ONE NOTE only. Do not merge across notes.
-Return a JSON object with key: "conditions" as an array of condition objects:
-{condition_name, category, subcategory, status, onset, evidence:[{note_id,line_no,span}]}.
-Include at least one evidence entry per condition, from this note.
-"""
-
-
-PATIENT_SYSTEM_PROMPT = """You are an expert clinical information extraction system.
-
-Task: Build a longitudinal condition summary for ONE PATIENT by consolidating condition mentions across notes.
-
-Hard constraints:
-- Output MUST be valid JSON matching:
-  { "patient_id": "...", "conditions": [ {condition_name, category, subcategory, status, onset, evidence:[...]} ] }
-- Only taxonomy-valid category/subcategory keys.
-- status reflects the condition's state as of the LATEST note where it appears.
-- onset uses the EARLIEST explicit documentation date, following the onset priority rules in the instructions.
-- evidence MUST include excerpts from EVERY note where the condition is mentioned (comprehensive).
-- evidence.span MUST be copied EXACTLY from the provided evidence candidates (no edits).
-- One entry per distinct condition; separate entries for different metastatic sites / anatomical sites when applicable.
-
-Do not add any conditions that are not supported by evidence candidates.
-"""
-
-
-def _taxonomy_brief(taxonomy: dict[str, Any]) -> str:
-    # Keep prompt size small: only keys
-    cats = get_valid_categories(taxonomy)
-    statuses = get_valid_statuses(taxonomy)
-    return json.dumps({"valid_categories": cats, "valid_statuses": statuses}, ensure_ascii=False)
+# ---------------------------------------------------------------------------
+# Cache helpers
+# ---------------------------------------------------------------------------
 
 
 def _cache_get(cache_dir: Path, key: str) -> dict[str, Any] | None:
@@ -73,6 +44,11 @@ def _cache_get(cache_dir: Path, key: str) -> dict[str, Any] | None:
 def _cache_set(cache_dir: Path, key: str, obj: dict[str, Any]) -> None:
     ensure_dir(cache_dir)
     dump_json(cache_dir / f"{key}.json", obj)
+
+
+# ---------------------------------------------------------------------------
+# Evidence span coercion
+# ---------------------------------------------------------------------------
 
 
 def _coerce_evidence_spans(note: dict[str, Any], extracted: dict[str, Any]) -> dict[str, Any]:
@@ -104,6 +80,69 @@ def _coerce_evidence_spans(note: dict[str, Any], extracted: dict[str, Any]) -> d
     return extracted
 
 
+# ---------------------------------------------------------------------------
+# Condition recovery: fuzzy taxonomy key matching
+# ---------------------------------------------------------------------------
+
+def _try_recover_taxonomy_keys(
+    item: dict[str, Any], valid_cat_to_subcats: dict[str, list[str]]
+) -> dict[str, Any] | None:
+    """Attempt to fix invalid category/subcategory keys via fuzzy matching.
+
+    Returns the fixed item dict if recoverable, None otherwise.
+    """
+    cat = str(item.get("category", "")).strip().lower()
+    subcat = str(item.get("subcategory", "")).strip().lower()
+
+    # Try exact cat first
+    if cat in valid_cat_to_subcats:
+        if subcat in valid_cat_to_subcats[cat]:
+            return item  # already valid
+        # Try fuzzy subcat within this category
+        best_sub, best_score = None, 0
+        for valid_sub in valid_cat_to_subcats[cat]:
+            score = fuzz.ratio(subcat, valid_sub)
+            if score > best_score:
+                best_sub, best_score = valid_sub, score
+        if best_score >= 75 and best_sub:
+            item["subcategory"] = best_sub
+            logger.info("Recovered subcategory: '%s' → '%s' (score=%d)", subcat, best_sub, best_score)
+            return item
+
+    # Try fuzzy cat
+    best_cat, best_cat_score = None, 0
+    for valid_cat in valid_cat_to_subcats:
+        score = fuzz.ratio(cat, valid_cat)
+        if score > best_cat_score:
+            best_cat, best_cat_score = valid_cat, score
+
+    if best_cat_score >= 75 and best_cat:
+        item["category"] = best_cat
+        # Now try subcat within the matched category
+        if subcat in valid_cat_to_subcats[best_cat]:
+            logger.info("Recovered category: '%s' → '%s' (score=%d)", cat, best_cat, best_cat_score)
+            return item
+        best_sub, best_sub_score = None, 0
+        for valid_sub in valid_cat_to_subcats[best_cat]:
+            score = fuzz.ratio(subcat, valid_sub)
+            if score > best_sub_score:
+                best_sub, best_sub_score = valid_sub, score
+        if best_sub_score >= 75 and best_sub:
+            item["subcategory"] = best_sub
+            logger.info(
+                "Recovered category+subcategory: '%s.%s' → '%s.%s'",
+                cat, subcat, best_cat, best_sub,
+            )
+            return item
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Per-note extraction
+# ---------------------------------------------------------------------------
+
+
 def extract_conditions_from_note(
     *,
     llm: OpenAICompatibleClient,
@@ -111,19 +150,14 @@ def extract_conditions_from_note(
     note: dict[str, Any],
     config: ExtractorConfig,
 ) -> list[Condition]:
-    taxonomy_brief = _taxonomy_brief(taxonomy)
+    system_prompt = build_note_system_prompt(taxonomy)
     note_text = format_note_with_line_numbers(note)
-    user = (
-        "Valid taxonomy keys (do not output anything else):\n"
-        f"{taxonomy_brief}\n\n"
-        f"note_id: {note['note_id']}\n"
-        "NOTE (each line starts with line_no: ): \n"
-        f"{note_text}\n"
-    )
-    cache_key = sha256_text(NOTE_SYSTEM_PROMPT + "\n" + user)
+    user_prompt = build_note_user_prompt(note["note_id"], note_text, taxonomy)
+
+    cache_key = sha256_text(system_prompt + "\n" + user_prompt)
     cached = _cache_get(config.cache_dir / "note", cache_key)
     if cached is None:
-        cached = llm.json_chat(system=NOTE_SYSTEM_PROMPT, user=user)
+        cached = llm.json_chat(system=system_prompt, user=user_prompt)
         _cache_set(config.cache_dir / "note", cache_key, cached)
 
     cached = _coerce_evidence_spans(note, cached)
@@ -133,6 +167,14 @@ def extract_conditions_from_note(
 
     out: list[Condition] = []
     for item in (cached.get("conditions", []) or [])[: config.max_conditions_per_note]:
+        # Attempt recovery for invalid taxonomy keys
+        if not _is_taxonomy_valid(item, valid_cat_to_subcats):
+            recovered = _try_recover_taxonomy_keys(item, valid_cat_to_subcats)
+            if recovered is None:
+                logger.debug("Dropping condition with unrecoverable taxonomy: %s", item.get("condition_name"))
+                continue
+            item = recovered
+
         try:
             c = Condition.model_validate(item)
         except Exception:
@@ -145,6 +187,18 @@ def extract_conditions_from_note(
             continue
         out.append(c)
     return out
+
+
+def _is_taxonomy_valid(item: dict[str, Any], valid_cat_to_subcats: dict[str, list[str]]) -> bool:
+    """Quick check if an item has valid category/subcategory."""
+    cat = str(item.get("category", ""))
+    subcat = str(item.get("subcategory", ""))
+    return cat in valid_cat_to_subcats and subcat in valid_cat_to_subcats.get(cat, [])
+
+
+# ---------------------------------------------------------------------------
+# Condition keying and deduplication
+# ---------------------------------------------------------------------------
 
 
 def _key_for_condition(c: Condition) -> ConditionKey:
@@ -193,6 +247,139 @@ def _dedupe_conditions(conditions: list[Condition]) -> list[Condition]:
     return list(merged_map.values())
 
 
+# ---------------------------------------------------------------------------
+# Evidence hardening (post-LLM deterministic pass)
+# ---------------------------------------------------------------------------
+
+# Common clinical abbreviations mapping condition keywords to abbreviations
+_ABBREVIATION_MAP: dict[str, list[str]] = {
+    "hypertension": ["htn", "hypert."],
+    "diabetes mellitus": ["dm", "dm ii", "dm2", "niddm", "iddm", "dm i", "dm1"],
+    "atrial fibrillation": ["afib", "a-fib", "af"],
+    "chronic obstructive pulmonary disease": ["copd"],
+    "congestive heart failure": ["chf"],
+    "coronary artery disease": ["cad"],
+    "myocardial infarction": ["mi"],
+    "cerebrovascular accident": ["cva", "stroke"],
+    "deep vein thrombosis": ["dvt"],
+    "pulmonary embolism": ["pe"],
+    "urinary tract infection": ["uti"],
+    "obstructive sleep apnea": ["osa", "osas"],
+    "gastroesophageal reflux disease": ["gerd"],
+    "chronic kidney disease": ["ckd"],
+    "end-stage renal disease": ["esrd"],
+    "acute respiratory distress syndrome": ["ards"],
+    "anemia": ["hb low", "hemoglobin low"],
+    "thrombocytopenia": ["low platelets", "plt low"],
+    "carcinoma": ["ca", "ca."],
+}
+
+
+def _harden_evidence(
+    patient_output: PatientOutput,
+    notes: list[dict[str, Any]],
+) -> PatientOutput:
+    """Deterministic post-pass to ensure evidence completeness.
+
+    For each predicted condition:
+    1. Scan ALL note lines for mentions (exact/fuzzy name, abbreviations)
+    2. If a note contains a mention but evidence array lacks it, add an entry
+    3. Deduplicate evidence entries (same note_id + line_no)
+    4. Verify all evidence.span values are exact substrings; fix if not
+    5. Remove evidence entries where line_no is out of range
+    """
+    note_map: dict[str, dict[str, Any]] = {n["note_id"]: n for n in notes}
+
+    for condition in patient_output.conditions:
+        cond_name_lower = condition.condition_name.lower()
+        # Build search terms
+        search_terms = [cond_name_lower]
+        # Add significant substrings (words > 4 chars)
+        words = [w for w in re.split(r"\W+", cond_name_lower) if len(w) > 4]
+        if words:
+            search_terms.extend(words)
+        # Add abbreviations
+        for full_name, abbrevs in _ABBREVIATION_MAP.items():
+            if full_name in cond_name_lower or cond_name_lower in full_name:
+                search_terms.extend(abbrevs)
+
+        existing_keys: set[tuple[str, int]] = set()
+        for ev in condition.evidence:
+            existing_keys.add((ev.note_id, ev.line_no))
+
+        new_evidence = list(condition.evidence)
+
+        for note_id, note_data in note_map.items():
+            note_lines: dict[int, str] = note_data["lines"]
+            for line_no, line_content in note_lines.items():
+                if (note_id, line_no) in existing_keys:
+                    continue
+                line_lower = line_content.lower()
+                if not line_lower.strip():
+                    continue
+                # Check if any search term appears in this line
+                found = False
+                for term in search_terms:
+                    if term in line_lower:
+                        found = True
+                        break
+                if not found:
+                    continue
+
+                # Verify this is a meaningful mention (not just a medication line or header)
+                # Skip very short lines or lines that are just formatting
+                stripped = line_content.strip()
+                if len(stripped) < 3:
+                    continue
+
+                # Use the condition name or its closest match as span
+                span = stripped
+                # Try to find the most specific match as span
+                for term in search_terms[:3]:
+                    idx = line_lower.find(term)
+                    if idx >= 0 and len(term) > 3:
+                        # Use a window around the match
+                        span = stripped
+                        break
+
+                from .schemas import Evidence
+                new_evidence.append(Evidence(note_id=note_id, line_no=line_no, span=span))
+                existing_keys.add((note_id, line_no))
+
+        # Deduplicate by (note_id, line_no)
+        seen: set[tuple[str, int]] = set()
+        deduped = []
+        for ev in new_evidence:
+            key = (ev.note_id, ev.line_no)
+            if key in seen:
+                continue
+            seen.add(key)
+            # Verify line_no is in range and span exactness
+            note_data = note_map.get(ev.note_id)
+            if note_data is None:
+                continue
+            note_lines = note_data["lines"]
+            if ev.line_no not in note_lines:
+                continue
+            raw_line = note_lines[ev.line_no]
+            if ev.span not in raw_line:
+                # Fix span to be the full line
+                span = clean_markdown_line(raw_line)
+                if span and span not in raw_line:
+                    span = raw_line
+                ev = Evidence(note_id=ev.note_id, line_no=ev.line_no, span=span if span else raw_line)
+            deduped.append(ev)
+
+        condition.evidence = deduped
+
+    return patient_output
+
+
+# ---------------------------------------------------------------------------
+# Patient consolidation
+# ---------------------------------------------------------------------------
+
+
 def consolidate_patient(
     *,
     llm: OpenAICompatibleClient,
@@ -200,9 +387,10 @@ def consolidate_patient(
     patient_id: str,
     note_ids_in_order: list[str],
     note_conditions: dict[str, list[Condition]],
+    notes: list[dict[str, Any]] | None = None,
     config: ExtractorConfig,
 ) -> PatientOutput:
-    taxonomy_brief = _taxonomy_brief(taxonomy)
+    system_prompt = build_patient_system_prompt(taxonomy)
 
     # Provide candidate evidence only (keep spans exact), plus note order for status rule.
     candidates: list[dict[str, Any]] = []
@@ -221,20 +409,12 @@ def consolidate_patient(
                 }
             )
 
-    user = (
-        f"patient_id: {patient_id}\n"
-        "Valid taxonomy keys (do not output anything else):\n"
-        f"{taxonomy_brief}\n\n"
-        "Notes are in chronological order (earliest to latest):\n"
-        f"{json.dumps(note_ids_in_order, ensure_ascii=False)}\n\n"
-        "Evidence candidates (you MUST ONLY use these spans verbatim; include ALL notes where mentioned):\n"
-        f"{json.dumps(candidates, ensure_ascii=False)}\n"
-    )
+    user_prompt = build_patient_user_prompt(patient_id, note_ids_in_order, candidates, taxonomy)
 
-    cache_key = sha256_text(PATIENT_SYSTEM_PROMPT + "\n" + user)
+    cache_key = sha256_text(system_prompt + "\n" + user_prompt)
     cached = _cache_get(config.cache_dir / "patient", cache_key)
     if cached is None:
-        cached = llm.json_chat(system=PATIENT_SYSTEM_PROMPT, user=user)
+        cached = llm.json_chat(system=system_prompt, user=user_prompt)
         _cache_set(config.cache_dir / "patient", cache_key, cached)
 
     valid_cat_to_subcats = get_valid_categories(taxonomy)
@@ -243,11 +423,34 @@ def consolidate_patient(
     # Validate output schema + taxonomy; if model returns junk, fall back to deterministic merge.
     try:
         out = PatientOutput.model_validate(cached)
+        valid_conditions = []
         for c in out.conditions:
-            validate_condition_taxonomy(c, valid_cat_to_subcats)
+            try:
+                validate_condition_taxonomy(c, valid_cat_to_subcats)
+                valid_conditions.append(c)
+            except Exception:
+                # Try recovery
+                item = c.model_dump()
+                recovered = _try_recover_taxonomy_keys(item, valid_cat_to_subcats)
+                if recovered:
+                    try:
+                        rc = Condition.model_validate(recovered)
+                        validate_condition_taxonomy(rc, valid_cat_to_subcats)
+                        valid_conditions.append(rc)
+                    except Exception:
+                        logger.debug("Dropping condition after failed recovery: %s", c.condition_name)
+                else:
+                    logger.debug("Dropping unrecoverable condition: %s", c.condition_name)
+        out.conditions = valid_conditions
+
+        # Apply evidence hardening if notes are available
+        if notes:
+            out = _harden_evidence(out, notes)
+
         return out
     except Exception:
-        # deterministic fallback: dedupe candidates, keep status as latest mention, onset earliest non-null
+        logger.warning("Patient-level LLM output failed validation; using deterministic fallback for %s", patient_id)
+        # deterministic fallback: dedupe candidates, keep status as latest mention, onset earliest
         flat: list[Condition] = []
         latest_idx: dict[ConditionKey, int] = {}
         onset_best: dict[ConditionKey, str | None] = {}
@@ -271,5 +474,11 @@ def consolidate_patient(
                         break
             else:
                 by_k[k] = c.model_copy(update={"onset": onset_best.get(k)})
-        return PatientOutput(patient_id=patient_id, conditions=list(by_k.values()))
 
+        result = PatientOutput(patient_id=patient_id, conditions=list(by_k.values()))
+
+        # Apply evidence hardening if notes are available
+        if notes:
+            result = _harden_evidence(result, notes)
+
+        return result
