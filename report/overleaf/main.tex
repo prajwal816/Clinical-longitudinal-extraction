@@ -1,0 +1,157 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{amsmath}
+\usepackage{graphicx}
+
+% Figures drawn as vector diagrams (no external binaries required)
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,shapes.multipart}
+
+\title{Clinical Condition Extraction from Longitudinal Patient Notes}
+\author{NLP Assignment Submission}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Overview}
+
+We are given longitudinal clinical notes per patient (2--13 notes), ordered chronologically by filename (\texttt{text\_0.md} earliest). The task is to extract a structured condition summary per patient and write one JSON file \texttt{patient\_XX.json} following the schema in \texttt{clinical\_nlp\_assignment/problem\_statement.md}. Each condition must:
+\begin{itemize}[leftmargin=1.2em]
+  \item map to exactly one taxonomy slot (\texttt{category.subcategory}) from \texttt{taxonomy.json};
+  \item include a \texttt{status} in \{\texttt{active}, \texttt{resolved}, \texttt{suspected}\} reflecting the latest note where it appears;
+  \item include an \texttt{onset} date using the specified priority rules (or \texttt{null});
+  \item include comprehensive evidence excerpts across notes with exact \texttt{note\_id}, \texttt{line\_no}, and verbatim \texttt{span}.
+\end{itemize}
+
+\section{System design}
+
+The system is implemented as a two-stage LLM extraction pipeline with strict post-validation and caching.
+
+\subsection{Stage A: Note-level extraction}
+For each note:
+\begin{itemize}[leftmargin=1.2em]
+  \item Load the note and assign 1-indexed line numbers.
+  \item Prompt an OpenAI-compatible LLM to extract only taxonomy-valid conditions mentioned in that note.
+  \item Enforce evidence integrity: each evidence span must be copied verbatim from the referenced line; if not, fall back to the full line.
+  \item Validate extracted objects against a schema (Pydantic) and taxonomy keys.
+\end{itemize}
+
+\subsection{Stage B: Patient-level consolidation}
+We consolidate candidates across notes to produce the final patient condition inventory:
+\begin{itemize}[leftmargin=1.2em]
+  \item De-duplicate near-identical conditions within the same taxonomy slot using lightweight fuzzy matching.
+  \item Set \texttt{status} as of the latest note where the condition appears (note order provided to the consolidator).
+  \item Set \texttt{onset} using the task’s priority rules (model instructed).
+  \item Aggregate evidence across all notes where mentioned.
+\end{itemize}
+
+\subsection{Caching, cost, and determinism}
+LLM calls are cached on disk keyed by a hash of prompt contents; re-runs on the same inputs avoid duplicate token consumption. Default temperature is 0.0 to reduce variance.
+
+\section{Pipeline diagram (figure)}
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[
+  node distance=10mm,
+  box/.style={draw, rounded corners, align=center, minimum width=42mm, minimum height=10mm},
+  arr/.style={-{Latex[length=3mm]}, thick}
+]
+  \node[box] (input) {Patient folder\\\texttt{patient\_XX/}\\\texttt{text\_0..N.md}};
+  \node[box, right=14mm of input] (note) {Stage A\\Note extraction\\(line-numbered)};
+  \node[box, right=14mm of note] (cand) {Candidate conditions\\per note\\(taxonomy-valid)};
+  \node[box, right=14mm of cand] (cons) {Stage B\\Patient consolidation\\(dedupe, onset, status)};
+  \node[box, right=14mm of cons] (out) {Output\\\texttt{output/patient\_XX.json}};
+
+  \draw[arr] (input) -- (note);
+  \draw[arr] (note) -- (cand);
+  \draw[arr] (cand) -- (cons);
+  \draw[arr] (cons) -- (out);
+\end{tikzpicture}
+\caption{End-to-end extraction pipeline.}
+\end{figure}
+
+\section{Evidence completeness}
+\label{sec:evidence}
+
+The specification requires evidence to be comprehensive: include excerpts from every note where a condition is mentioned. The current system enforces this primarily by (i) supplying per-note candidates from all notes and (ii) explicitly instructing the patient-level consolidator to include evidence from every note where mentioned, using only provided spans.
+
+\subsection{Recommended hardening}
+To reduce dependence on LLM compliance, add a deterministic post-check:
+\begin{itemize}[leftmargin=1.2em]
+  \item For each predicted condition, scan all note lines for normalized mention strings (and common abbreviations/ICD tokens observed in training data).
+  \item If a mention exists in a note without evidence, append a new evidence entry referencing the matching line.
+\end{itemize}
+This improves evidence recall without extra LLM calls.
+
+\section{Experiments and results (template)}
+
+The repository includes a lightweight evaluation helper for iteration on labeled training patients:
+\begin{quote}
+\texttt{python -m clinical\_nlp\_assignment.train --data-dir ./clinical\_nlp\_assignment/train --taxonomy-path ./clinical\_nlp\_assignment/taxonomy.json}
+\end{quote}
+
+We report a practical dev metric using exact taxonomy matching and fuzzy matching over normalized condition names. Fill the table below after running:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lccc}
+\toprule
+Split & Precision & Recall & F1 \\
+\midrule
+Train (macro) & \_\_ & \_\_ & \_\_ \\
+\bottomrule
+\end{tabular}
+\caption{Development metrics (for iteration; official evaluation may differ).}
+\end{table}
+
+\section{Reproducibility and running}
+
+\subsection{Dependencies}
+\begin{quote}
+\texttt{pip install -r requirements.txt}
+\end{quote}
+
+\subsection{Environment variables}
+The evaluator provides these at runtime:
+\begin{itemize}[leftmargin=1.2em]
+  \item \texttt{OPENAI\_BASE\_URL}
+  \item \texttt{OPENAI\_API\_KEY}
+  \item \texttt{OPENAI\_MODEL}
+\end{itemize}
+
+\subsection{Inference command}
+\begin{quote}
+\texttt{python main.py --data-dir ./clinical\_nlp\_assignment/dev --patient-list ./patients.json --output-dir ./output}
+\end{quote}
+
+\subsection{Output validation}
+\begin{quote}
+\texttt{python -m clinical\_nlp\_assignment.validate\_outputs --output-dir ./output --taxonomy-path ./clinical\_nlp\_assignment/taxonomy.json}
+\end{quote}
+
+\section{What worked, what didn’t}
+
+\subsection{What worked}
+\begin{itemize}[leftmargin=1.2em]
+  \item Two-stage extraction helps recall in long documents and encourages comprehensive evidence.
+  \item Strict schema + taxonomy validation prevents invalid outputs.
+  \item Disk caching significantly reduces repeat cost/time.
+\end{itemize}
+
+\subsection{Risks / limitations}
+\begin{itemize}[leftmargin=1.2em]
+  \item Some OpenAI-compatible providers may not support \texttt{response\_format=\{"type":"json\_object"\}}; if so, the client should fall back to JSON-only prompting + parsing.
+  \item Evidence completeness can still depend on model behavior unless hardened as described in Section~\ref{sec:evidence}.
+\end{itemize}
+
+\end{document}
+
