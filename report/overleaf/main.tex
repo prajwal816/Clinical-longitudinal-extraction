@@ -19,7 +19,7 @@
 
 \section{Overview}
 
-We are given longitudinal clinical notes per patient (2--13 notes), ordered chronologically by filename (\texttt{text\_0.md} earliest). The task is to extract a structured condition summary per patient and write one JSON file \texttt{patient\_XX.json} following the schema in \texttt{clinical\_nlp\_assignment/problem\_statement.md}. Each condition must:
+We are given longitudinal clinical notes per patient (2--13 notes), ordered chronologically by filename (\texttt{text\_0.md} earliest). The task is to extract a structured condition summary per patient and write one JSON file \texttt{patient\_XX.json} following the schema in \texttt{problem\_statement.md}. Each condition must:
 \begin{itemize}[leftmargin=1.2em]
   \item map to exactly one taxonomy slot (\texttt{category.subcategory}) from \texttt{taxonomy.json};
   \item include a \texttt{status} in \{\texttt{active}, \texttt{resolved}, \texttt{suspected}\} reflecting the latest note where it appears;
@@ -27,126 +27,171 @@ We are given longitudinal clinical notes per patient (2--13 notes), ordered chro
   \item include comprehensive evidence excerpts across notes with exact \texttt{note\_id}, \texttt{line\_no}, and verbatim \texttt{span}.
 \end{itemize}
 
-\section{System design}
+\section{System Design}
 
-The system is implemented as a two-stage LLM extraction pipeline with strict post-validation and caching.
+The system is a \textbf{two-stage LLM extraction pipeline} with strict post-validation, deterministic evidence hardening, and fuzzy taxonomy recovery.
 
-\subsection{Stage A: Note-level extraction}
-For each note:
+\subsection{Stage A: Note-Level Extraction}
+For each clinical note:
+\begin{enumerate}[leftmargin=1.2em]
+  \item Load the note with 1-indexed line numbers.
+  \item Construct a \textbf{rich system prompt} (\texttt{prompts.py}) containing:
+    \begin{itemize}
+      \item Full taxonomy with descriptions, subcategory explanations, and examples
+      \item Status value definitions with signal keywords
+      \item Disambiguation rules verbatim from taxonomy (heart failure categorization, diabetic complications)
+      \item Onset priority rules and date format requirements
+      \item A few-shot example demonstrating expected input/output format
+    \end{itemize}
+  \item Prompt the LLM to extract all taxonomy-valid conditions.
+  \item \textbf{Coerce evidence spans}: enforce each \texttt{evidence.span} is an exact substring of the referenced \texttt{line\_no}; fall back to the full line if the LLM paraphrased.
+  \item \textbf{Recover invalid taxonomy keys}: if the LLM outputs a close-but-wrong category/subcategory key, attempt fuzzy matching ($\geq$ 75\% similarity) against valid keys before discarding.
+  \item Validate each condition against Pydantic schema + taxonomy keys.
+\end{enumerate}
+
+\subsection{Stage B: Patient-Level Consolidation}
+All per-note candidates are consolidated into a single patient summary:
 \begin{itemize}[leftmargin=1.2em]
-  \item Load the note and assign 1-indexed line numbers.
-  \item Prompt an OpenAI-compatible LLM to extract only taxonomy-valid conditions mentioned in that note.
-  \item Enforce evidence integrity: each evidence span must be copied verbatim from the referenced line; if not, fall back to the full line.
-  \item Validate extracted objects against a schema (Pydantic) and taxonomy keys.
+  \item \textbf{Deduplication}: synonymous conditions within the same taxonomy slot are merged using fuzzy name matching ($\geq$ 94\% similarity).
+  \item \textbf{Status}: uses the status from the chronologically latest note where the condition appears.
+  \item \textbf{Onset}: uses the earliest non-null onset, following the taxonomy's priority rules.
+  \item \textbf{Evidence}: the LLM is explicitly instructed to include evidence from every note where the condition is mentioned.
 \end{itemize}
 
-\subsection{Stage B: Patient-level consolidation}
-We consolidate candidates across notes to produce the final patient condition inventory:
+If the consolidation output fails validation, the system falls back to a \textbf{deterministic merge}: dedup by normalized name + taxonomy slot, earliest onset, latest status, union of evidence.
+
+\subsection{Stage C: Evidence Hardening (Deterministic Post-Pass)}
+After consolidation, a deterministic pass scans all note lines for missed evidence:
 \begin{itemize}[leftmargin=1.2em]
-  \item De-duplicate near-identical conditions within the same taxonomy slot using lightweight fuzzy matching.
-  \item Set \texttt{status} as of the latest note where the condition appears (note order provided to the consolidator).
-  \item Set \texttt{onset} using the task’s priority rules (model instructed).
-  \item Aggregate evidence across all notes where mentioned.
+  \item Matches the full condition name (case-insensitive) and known clinical abbreviations (e.g., ``ARDS'', ``COPD'', ``NIDDM'').
+  \item Adds missing evidence entries conservatively (minimum 5-character term length to avoid noisy matches).
+  \item Deduplicates evidence by \texttt{(note\_id, line\_no)} and verifies span exactness.
 \end{itemize}
 
-\subsection{Caching, cost, and determinism}
-LLM calls are cached on disk keyed by a hash of prompt contents; re-runs on the same inputs avoid duplicate token consumption. Default temperature is 0.0 to reduce variance.
-
-\section{Pipeline diagram (figure)}
-
-\begin{figure}[h]
-\centering
-\includegraphics[width=\linewidth]{../assets/pipeline.png}
-\caption{End-to-end extraction pipeline.}
-\end{figure}
-
-\section{Taxonomy overview (figure)}
-
-\begin{figure}[h]
-\centering
-\includegraphics[width=0.95\linewidth]{../assets/taxonomy_overview.png}
-\caption{Taxonomy overview: number of subcategories per category.}
-\end{figure}
-
-\section{Evidence completeness}
-\label{sec:evidence}
-
-The specification requires evidence to be comprehensive: include excerpts from every note where a condition is mentioned. The current system enforces this primarily by (i) supplying per-note candidates from all notes and (ii) explicitly instructing the patient-level consolidator to include evidence from every note where mentioned, using only provided spans.
-
-\subsection{Recommended hardening}
-To reduce dependence on LLM compliance, add a deterministic post-check:
+\subsection{Caching, Cost, and Determinism}
 \begin{itemize}[leftmargin=1.2em]
-  \item For each predicted condition, scan all note lines for normalized mention strings (and common abbreviations/ICD tokens observed in training data).
-  \item If a mention exists in a note without evidence, append a new evidence entry referencing the matching line.
+  \item LLM calls cached on disk (SHA-256 hash of prompt content); re-runs avoid duplicate tokens.
+  \item Default temperature 0.0 for determinism.
+  \item Token usage tracked per call; summary printed at end of each run.
+  \item Robust JSON parsing handles fenced code blocks and embedded JSON.
 \end{itemize}
-This improves evidence recall without extra LLM calls.
 
-\section{Experiments and results (template)}
+\section{Key Design Decisions}
 
-The repository includes a lightweight evaluation helper for iteration on labeled training patients:
-\begin{quote}
-\texttt{python -m clinical\_nlp\_assignment.train --data-dir ./clinical\_nlp\_assignment/train --taxonomy-path ./clinical\_nlp\_assignment/taxonomy.json}
-\end{quote}
+\begin{enumerate}[leftmargin=1.2em]
+  \item \textbf{Full taxonomy in prompts}: Including subcategory descriptions and examples ($\sim$15K char system prompt) substantially improves category assignment accuracy vs.\ keys-only.
+  \item \textbf{Disambiguation rules verbatim}: Prevents common errors (e.g., diabetic nephropathy classified under renal instead of \texttt{metabolic\_endocrine.diabetes}).
+  \item \textbf{Increased max\_output\_tokens (4096)}: Prevents truncation for patients with many conditions (e.g., patient\_16 has 23+ conditions).
+  \item \textbf{Conservative evidence hardening}: Only matches full condition name and known abbreviations — does \emph{not} decompose names into individual words to avoid noisy false matches.
+  \item \textbf{Schema relaxation}: \texttt{extra="ignore"} on Pydantic models so LLMs adding extra fields (e.g., ``confidence'') don't crash the pipeline.
+\end{enumerate}
 
-We report a practical dev metric using exact taxonomy matching and fuzzy matching over normalized condition names. Fill the table below after running:
+\section{Evaluation Framework}
+
+The repository includes a rich evaluation framework (\texttt{evaluate.py}, \texttt{train.py}) covering all six scoring dimensions:
 
 \begin{table}[h]
 \centering
-\begin{tabular}{lccc}
+\begin{tabular}{ll}
 \toprule
-Split & Precision & Recall & F1 \\
+Metric & Description \\
 \midrule
-Train (macro) & \_\_ & \_\_ & \_\_ \\
+Condition P/R/F1 & Category + subcategory match, fuzzy name match ($\geq 94\%$) \\
+Status accuracy & Correct status among matched conditions \\
+Onset accuracy & Exact string match on onset date \\
+Onset partial & Year-level match ($0.5$ credit) \\
+Evidence recall & \% of GT evidence note\_ids covered \\
+Evidence precision & Relevant / total predicted evidence entries \\
 \bottomrule
 \end{tabular}
-\caption{Development metrics (for iteration; official evaluation may differ).}
+\caption{Evaluation dimensions matching the official criteria.}
 \end{table}
 
-\begin{figure}[h]
-\centering
-\includegraphics[width=0.7\linewidth]{../assets/metrics_plot.png}
-\caption{Development metrics plot (template; populate after running evaluation).}
-\end{figure}
+\textbf{Script:}
+\begin{quote}
+\texttt{python -m clinical\_nlp\_assignment.train --data-dir ./clinical\_nlp\_assignment/train --taxonomy-path ./clinical\_nlp\_assignment/taxonomy.json --results-json ./results.json}
+\end{quote}
 
-\section{Reproducibility and running}
+\section{Reproducibility and Running}
 
 \subsection{Dependencies}
 \begin{quote}
 \texttt{pip install -r requirements.txt}
 \end{quote}
 
-\subsection{Environment variables}
-The evaluator provides these at runtime:
+\subsection{Environment Variables}
 \begin{itemize}[leftmargin=1.2em]
-  \item \texttt{OPENAI\_BASE\_URL}
-  \item \texttt{OPENAI\_API\_KEY}
-  \item \texttt{OPENAI\_MODEL}
+  \item \texttt{OPENAI\_BASE\_URL} — The API base URL
+  \item \texttt{OPENAI\_API\_KEY} — The API key
+  \item \texttt{OPENAI\_MODEL} — The model identifier
 \end{itemize}
 
-\subsection{Inference command}
+\subsection{Inference}
 \begin{quote}
 \texttt{python main.py --data-dir ./clinical\_nlp\_assignment/dev --patient-list ./patients.json --output-dir ./output}
 \end{quote}
 
-\subsection{Output validation}
+\subsection{Additional CLI Arguments}
+\begin{table}[h]
+\centering
+\begin{tabular}{lll}
+\toprule
+Argument & Default & Description \\
+\midrule
+\texttt{--temperature} & 0.0 & LLM temperature \\
+\texttt{--max-output-tokens} & 4096 & Max output tokens per call \\
+\texttt{--concurrency} & 4 & Parallel per-note extraction threads \\
+\texttt{--verbose} & off & Debug logging \\
+\texttt{--dry-run} & off & Empty outputs, no LLM calls \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Validate Outputs}
 \begin{quote}
 \texttt{python -m clinical\_nlp\_assignment.validate\_outputs --output-dir ./output --taxonomy-path ./clinical\_nlp\_assignment/taxonomy.json}
 \end{quote}
 
-\section{What worked, what didn’t}
+\section{Module Architecture}
 
-\subsection{What worked}
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{ll}
+\toprule
+Module & Responsibility \\
+\midrule
+\texttt{main.py} & CLI entrypoint \\
+\texttt{prompts.py} & Prompt construction (taxonomy, few-shot, rules) \\
+\texttt{extractor.py} & Per-note extraction, consolidation, evidence hardening \\
+\texttt{inference.py} & Patient pipeline orchestration (parallel) \\
+\texttt{llm\_client.py} & OpenAI-compatible client with token tracking \\
+\texttt{evaluate.py} & P/R/F1, status, onset, evidence metrics \\
+\texttt{train.py} & Training set evaluation with detailed reporting \\
+\texttt{schemas.py} & Pydantic models (Condition, Evidence, PatientOutput) \\
+\texttt{data\_loader.py} & Patient notes, taxonomy, labels I/O \\
+\texttt{utils.py} & Hashing, normalization, file I/O helpers \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{What Worked / What Didn't}
+
+\subsection{What Worked}
 \begin{itemize}[leftmargin=1.2em]
-  \item Two-stage extraction helps recall in long documents and encourages comprehensive evidence.
-  \item Strict schema + taxonomy validation prevents invalid outputs.
-  \item Disk caching significantly reduces repeat cost/time.
+  \item Two-stage extraction reduces missed conditions and encourages comprehensive evidence.
+  \item Full taxonomy in prompts substantially improves category/subcategory accuracy.
+  \item Evidence hardening deterministically fills evidence gaps for conditions mentioned across many notes.
+  \item Fuzzy taxonomy recovery saves conditions that would otherwise be dropped due to minor LLM key typos.
+  \item Disk caching and parallel processing improve speed and cost substantially on re-runs.
+  \item Robust JSON parsing handles models that output fenced code blocks.
 \end{itemize}
 
-\subsection{Risks / limitations}
+\subsection{Risks / Limitations}
 \begin{itemize}[leftmargin=1.2em]
-  \item Some OpenAI-compatible providers may not support \texttt{response\_format=\{"type":"json\_object"\}}; if so, the client should fall back to JSON-only prompting + parsing.
-  \item Evidence completeness can still depend on model behavior unless hardened as described in Section~\ref{sec:evidence}.
+  \item Different models (GPT-4, Claude, Mixtral) have different instruction-following behaviors; prompts may need tuning for the evaluation model.
+  \item Onset date extraction involving relative date conversion is heavily model-dependent.
+  \item Rich taxonomy prompts ($\sim$15K char system prompt) increase per-call token usage, offset by improved accuracy.
 \end{itemize}
 
 \end{document}
-
