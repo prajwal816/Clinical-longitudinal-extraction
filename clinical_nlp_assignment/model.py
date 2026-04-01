@@ -4,7 +4,7 @@ from .llm_client import LLMConfig, OpenAICompatibleClient, load_llm_config_from_
 
 
 def build_llm_client(
-    *, temperature: float = 0.0, max_output_tokens: int = 2048
+    *, temperature: float = 0.0, max_output_tokens: int = 4096
 ) -> OpenAICompatibleClient:
     """
     Build an OpenAI-compatible client using required env vars:
