@@ -101,7 +101,7 @@ _FEW_SHOT_NOTE = """\
 8:
 9: **Medical History:**
 10: - Hypothyroidism
-11: - Idiopathic thrombocytopenia
+11: - Status post cholecystectomy in 2010
 12:
 13: **Therapy:** Blood pressure well controlled on Ramipril 5 mg.
 """
@@ -132,14 +132,6 @@ _FEW_SHOT_OUTPUT = """\
       "status": "active",
       "onset": null,
       "evidence": [{"note_id": "text_0", "line_no": 10, "span": "Hypothyroidism"}]
-    },
-    {
-      "condition_name": "Idiopathic thrombocytopenia",
-      "category": "hematological",
-      "subcategory": "cytopenia",
-      "status": "active",
-      "onset": null,
-      "evidence": [{"note_id": "text_0", "line_no": 11, "span": "Idiopathic thrombocytopenia"}]
     }
   ]
 }"""
@@ -153,6 +145,8 @@ def _build_few_shot_block() -> str:
         f"{_FEW_SHOT_NOTE}\n"
         "EXPECTED OUTPUT:\n"
         f"{_FEW_SHOT_OUTPUT}\n"
+        "NOTE: 'Status post cholecystectomy' is a surgical procedure, not a condition in the taxonomy, so it is NOT extracted.\n"
+        "NOTE: Hypothyroidism in Medical History is marked 'active' because it is a chronic ongoing condition being managed, not a past event.\n"
         "=== END EXAMPLE ===\n"
     )
 
