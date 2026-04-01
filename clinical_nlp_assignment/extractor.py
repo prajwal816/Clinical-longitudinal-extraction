@@ -253,26 +253,28 @@ def _dedupe_conditions(conditions: list[Condition]) -> list[Condition]:
 
 # Common clinical abbreviations mapping condition keywords to abbreviations
 _ABBREVIATION_MAP: dict[str, list[str]] = {
-    "hypertension": ["htn", "hypert."],
-    "diabetes mellitus": ["dm", "dm ii", "dm2", "niddm", "iddm", "dm i", "dm1"],
-    "atrial fibrillation": ["afib", "a-fib", "af"],
+    "hypertension": ["htn"],
+    "diabetes mellitus": ["dm ii", "dm2", "niddm", "iddm", "dm type"],
+    "atrial fibrillation": ["afib", "a-fib"],
     "chronic obstructive pulmonary disease": ["copd"],
     "congestive heart failure": ["chf"],
     "coronary artery disease": ["cad"],
-    "myocardial infarction": ["mi"],
-    "cerebrovascular accident": ["cva", "stroke"],
+    "myocardial infarction": ["mi ", "stemi", "nstemi"],
     "deep vein thrombosis": ["dvt"],
-    "pulmonary embolism": ["pe"],
+    "pulmonary embolism": ["pulm. embolism"],
     "urinary tract infection": ["uti"],
-    "obstructive sleep apnea": ["osa", "osas"],
+    "obstructive sleep apnea": ["osa ", "osas"],
     "gastroesophageal reflux disease": ["gerd"],
     "chronic kidney disease": ["ckd"],
     "end-stage renal disease": ["esrd"],
     "acute respiratory distress syndrome": ["ards"],
-    "anemia": ["hb low", "hemoglobin low"],
-    "thrombocytopenia": ["low platelets", "plt low"],
-    "carcinoma": ["ca", "ca."],
+    "thrombocytopenia": ["low platelets"],
+    "hypothyroidism": ["hypothyr."],
+    "hyperthyroidism": ["hyperthy."],
 }
+
+# Minimum length for a search term to be used (avoids short false matches)
+_MIN_TERM_LEN = 5
 
 
 def _harden_evidence(
@@ -281,27 +283,30 @@ def _harden_evidence(
 ) -> PatientOutput:
     """Deterministic post-pass to ensure evidence completeness.
 
-    For each predicted condition:
-    1. Scan ALL note lines for mentions (exact/fuzzy name, abbreviations)
-    2. If a note contains a mention but evidence array lacks it, add an entry
-    3. Deduplicate evidence entries (same note_id + line_no)
-    4. Verify all evidence.span values are exact substrings; fix if not
-    5. Remove evidence entries where line_no is out of range
+    Conservative approach: only matches the full condition name (case-insensitive)
+    and known clinical abbreviations. Does NOT decompose condition names into
+    individual words to avoid noisy false matches.
     """
+    from .schemas import Evidence
+
     note_map: dict[str, dict[str, Any]] = {n["note_id"]: n for n in notes}
 
     for condition in patient_output.conditions:
         cond_name_lower = condition.condition_name.lower()
-        # Build search terms
-        search_terms = [cond_name_lower]
-        # Add significant substrings (words > 4 chars)
-        words = [w for w in re.split(r"\W+", cond_name_lower) if len(w) > 4]
-        if words:
-            search_terms.extend(words)
-        # Add abbreviations
+
+        # Build search terms: full condition name + abbreviations only
+        search_terms: list[str] = [cond_name_lower]
+
+        # Add abbreviations only if the condition name matches a known mapping
         for full_name, abbrevs in _ABBREVIATION_MAP.items():
             if full_name in cond_name_lower or cond_name_lower in full_name:
                 search_terms.extend(abbrevs)
+
+        # Filter out terms that are too short to be meaningful
+        search_terms = [t for t in search_terms if len(t) >= _MIN_TERM_LEN]
+
+        if not search_terms:
+            continue  # Skip if no usable search terms
 
         existing_keys: set[tuple[str, int]] = set()
         for ev in condition.evidence:
@@ -315,38 +320,24 @@ def _harden_evidence(
                 if (note_id, line_no) in existing_keys:
                     continue
                 line_lower = line_content.lower()
-                if not line_lower.strip():
+                stripped = line_content.strip()
+                if len(stripped) < 5:
                     continue
+
                 # Check if any search term appears in this line
-                found = False
+                matched_term = None
                 for term in search_terms:
                     if term in line_lower:
-                        found = True
+                        matched_term = term
                         break
-                if not found:
+                if matched_term is None:
                     continue
 
-                # Verify this is a meaningful mention (not just a medication line or header)
-                # Skip very short lines or lines that are just formatting
-                stripped = line_content.strip()
-                if len(stripped) < 3:
-                    continue
-
-                # Use the condition name or its closest match as span
-                span = stripped
-                # Try to find the most specific match as span
-                for term in search_terms[:3]:
-                    idx = line_lower.find(term)
-                    if idx >= 0 and len(term) > 3:
-                        # Use a window around the match
-                        span = stripped
-                        break
-
-                from .schemas import Evidence
-                new_evidence.append(Evidence(note_id=note_id, line_no=line_no, span=span))
+                # Use the full stripped line as span (guaranteed to be in raw_line)
+                new_evidence.append(Evidence(note_id=note_id, line_no=line_no, span=stripped))
                 existing_keys.add((note_id, line_no))
 
-        # Deduplicate by (note_id, line_no)
+        # Deduplicate by (note_id, line_no) and verify span exactness
         seen: set[tuple[str, int]] = set()
         deduped = []
         for ev in new_evidence:
@@ -354,7 +345,6 @@ def _harden_evidence(
             if key in seen:
                 continue
             seen.add(key)
-            # Verify line_no is in range and span exactness
             note_data = note_map.get(ev.note_id)
             if note_data is None:
                 continue
@@ -363,7 +353,7 @@ def _harden_evidence(
                 continue
             raw_line = note_lines[ev.line_no]
             if ev.span not in raw_line:
-                # Fix span to be the full line
+                # Fix span to be the raw line
                 span = clean_markdown_line(raw_line)
                 if span and span not in raw_line:
                     span = raw_line
