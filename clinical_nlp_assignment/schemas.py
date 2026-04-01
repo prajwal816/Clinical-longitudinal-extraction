@@ -35,7 +35,7 @@ class Condition(BaseModel):
 
 
 class PatientOutput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     patient_id: str
     conditions: list[Condition] = Field(default_factory=list)
