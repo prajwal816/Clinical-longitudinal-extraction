@@ -9,7 +9,7 @@ StatusKey = Literal["active", "resolved", "suspected"]
 
 
 class Evidence(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     note_id: str
     line_no: int = Field(ge=1)
@@ -17,7 +17,7 @@ class Evidence(BaseModel):
 
 
 class Condition(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     condition_name: str = Field(min_length=1)
     category: str = Field(min_length=1)
