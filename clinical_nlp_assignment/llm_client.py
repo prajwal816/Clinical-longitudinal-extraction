@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from openai import OpenAI
+from openai import BadRequestError, OpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential_jitter
 
 from .utils import read_env_required
@@ -109,7 +109,7 @@ class OpenAICompatibleClient:
                     {"role": "user", "content": user},
                 ],
             )
-        except Exception:
+        except BadRequestError:
             # Some providers don't support response_format; fall back
             logger.warning("response_format=json_object not supported; retrying without it.")
             resp = self.client.chat.completions.create(
