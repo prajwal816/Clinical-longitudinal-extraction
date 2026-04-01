@@ -10,10 +10,6 @@
 \usepackage{amsmath}
 \usepackage{graphicx}
 
-% Figures drawn as vector diagrams (no external binaries required)
-\usepackage{tikz}
-\usetikzlibrary{arrows.meta,positioning,shapes.multipart}
-
 \title{Clinical Condition Extraction from Longitudinal Patient Notes}
 \author{NLP Assignment Submission}
 \date{\today}
@@ -60,23 +56,16 @@ LLM calls are cached on disk keyed by a hash of prompt contents; re-runs on the 
 
 \begin{figure}[h]
 \centering
-\begin{tikzpicture}[
-  node distance=10mm,
-  box/.style={draw, rounded corners, align=center, minimum width=42mm, minimum height=10mm},
-  arr/.style={-{Latex[length=3mm]}, thick}
-]
-  \node[box] (input) {Patient folder\\\texttt{patient\_XX/}\\\texttt{text\_0..N.md}};
-  \node[box, right=14mm of input] (note) {Stage A\\Note extraction\\(line-numbered)};
-  \node[box, right=14mm of note] (cand) {Candidate conditions\\per note\\(taxonomy-valid)};
-  \node[box, right=14mm of cand] (cons) {Stage B\\Patient consolidation\\(dedupe, onset, status)};
-  \node[box, right=14mm of cons] (out) {Output\\\texttt{output/patient\_XX.json}};
-
-  \draw[arr] (input) -- (note);
-  \draw[arr] (note) -- (cand);
-  \draw[arr] (cand) -- (cons);
-  \draw[arr] (cons) -- (out);
-\end{tikzpicture}
+\includegraphics[width=\linewidth]{../assets/pipeline.png}
 \caption{End-to-end extraction pipeline.}
+\end{figure}
+
+\section{Taxonomy overview (figure)}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.95\linewidth]{../assets/taxonomy_overview.png}
+\caption{Taxonomy overview: number of subcategories per category.}
 \end{figure}
 
 \section{Evidence completeness}
@@ -112,6 +101,12 @@ Train (macro) & \_\_ & \_\_ & \_\_ \\
 \end{tabular}
 \caption{Development metrics (for iteration; official evaluation may differ).}
 \end{table}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.7\linewidth]{../assets/metrics_plot.png}
+\caption{Development metrics plot (template; populate after running evaluation).}
+\end{figure}
 
 \section{Reproducibility and running}
 
