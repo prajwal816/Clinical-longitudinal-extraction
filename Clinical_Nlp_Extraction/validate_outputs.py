@@ -3,8 +3,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from clinical_nlp_assignment.data_loader import get_valid_categories, load_taxonomy
-from clinical_nlp_assignment.schemas import PatientOutput, validate_condition_taxonomy
+from .data_loader import get_valid_categories, load_taxonomy
+from .schemas import PatientOutput, validate_condition_taxonomy
 
 
 def _parse_args() -> argparse.Namespace:
@@ -12,8 +12,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--output-dir", required=True, help="Directory containing patient_XX.json outputs")
     p.add_argument(
         "--taxonomy-path",
-        default=str(Path(__file__).parent / "taxonomy.json"),
-        help="Path to taxonomy.json (default: clinical_nlp_assignment/taxonomy.json)",
+        default=str(Path(__file__).resolve().parents[1] / "Data" / "taxonomy.json"),
+        help="Path to taxonomy.json (default: Data/taxonomy.json)",
     )
     return p.parse_args()
 

@@ -8,9 +8,9 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from Clinical_Nlp_Extraaction.data_loader import load_patient_list
-from Clinical_Nlp_Extraaction.inference import InferenceConfig, run_patient
-from Clinical_Nlp_Extraaction.llm_client import OpenAICompatibleClient, load_llm_config_from_env
+from Clinical_Nlp_Extraction.data_loader import load_patient_list
+from Clinical_Nlp_Extraction.inference import InferenceConfig, run_patient
+from Clinical_Nlp_Extraction.llm_client import OpenAICompatibleClient, load_llm_config_from_env
 
 
 def _parse_args() -> argparse.Namespace:
