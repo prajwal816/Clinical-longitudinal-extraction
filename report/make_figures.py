@@ -19,43 +19,98 @@ def save_fig(fig: plt.Figure, out_base: Path) -> None:
 
 
 def make_pipeline(assets: Path) -> None:
-    fig, ax = plt.subplots(figsize=(12, 2.6))
+    # Cleaner, more readable diagram for README/report embeds.
+    fig, ax = plt.subplots(figsize=(14, 2.9))
     ax.set_axis_off()
 
-    labels = [
-        "Patient folder\npatient_XX/\ntext_0..N.md",
-        "Stage A\nNote extraction\n(line-numbered)",
-        "Candidate conditions\nper note\n(taxonomy-valid)",
-        "Stage B\nPatient consolidation\n(dedupe, onset, status)",
-        "Output\npatient_XX.json",
+    steps = [
+        {"title": "Inputs", "subtitle": "Patient notes\n(text_0 … text_N)", "accent": "#2563eb"},
+        {"title": "Stage A", "subtitle": "Per-note extraction\n(line-numbered evidence)", "accent": "#7c3aed"},
+        {"title": "Merge", "subtitle": "Candidate pool\n(taxonomy-valid)", "accent": "#0ea5e9"},
+        {"title": "Stage B", "subtitle": "Patient consolidation\n(dedupe, onset, status)", "accent": "#22c55e"},
+        {"title": "Outputs", "subtitle": "patient_XX.json\n(schema-validated)", "accent": "#f97316"},
     ]
 
-    x0, y0 = 0.02, 0.35
-    w, h = 0.18, 0.35
-    xs = [x0 + i * (w + 0.02) for i in range(len(labels))]
+    x0, y0 = 0.03, 0.30
+    w, h = 0.17, 0.46
+    gap = 0.03
+    xs = [x0 + i * (w + gap) for i in range(len(steps))]
 
-    for x, lab in zip(xs, labels):
+    for x, s in zip(xs, steps):
+        # Main box
         box = FancyBboxPatch(
             (x, y0),
             w,
             h,
-            boxstyle="round,pad=0.02,rounding_size=0.02",
+            boxstyle="round,pad=0.018,rounding_size=0.03",
             linewidth=1.2,
-            edgecolor="#2f2f2f",
-            facecolor="#f6f8ff",
+            edgecolor="#111827",
+            facecolor="#ffffff",
         )
         ax.add_patch(box)
-        ax.text(x + w / 2, y0 + h / 2, lab, ha="center", va="center", fontsize=10)
+        # Accent bar
+        ax.add_patch(
+            FancyBboxPatch(
+                (x, y0 + h - 0.06),
+                w,
+                0.06,
+                boxstyle="round,pad=0.0,rounding_size=0.03",
+                linewidth=0,
+                facecolor=s["accent"],
+            )
+        )
+        ax.text(
+            x + 0.02,
+            y0 + h - 0.085,
+            s["title"],
+            ha="left",
+            va="top",
+            fontsize=11,
+            fontweight="bold",
+            color="#0b1220",
+        )
+        ax.text(
+            x + w / 2,
+            y0 + 0.17,
+            s["subtitle"],
+            ha="center",
+            va="center",
+            fontsize=10,
+            color="#334155",
+            linespacing=1.25,
+        )
 
-    for i in range(len(labels) - 1):
+    # Arrows between boxes
+    for i in range(len(steps) - 1):
         x1 = xs[i] + w
         x2 = xs[i + 1]
         ax.annotate(
             "",
             xy=(x2, y0 + h / 2),
             xytext=(x1, y0 + h / 2),
-            arrowprops=dict(arrowstyle="->", lw=1.5, color="#2f2f2f"),
+            arrowprops=dict(arrowstyle="->", lw=2.0, color="#111827"),
         )
+
+    # Caption-like header for context (helps when image is viewed alone)
+    ax.text(
+        0.03,
+        0.92,
+        "Clinical NLP pipeline: longitudinal condition summary extraction",
+        ha="left",
+        va="center",
+        fontsize=12,
+        fontweight="bold",
+        color="#0b1220",
+    )
+    ax.text(
+        0.03,
+        0.86,
+        "Two-pass LLM extraction + taxonomy/schema validation + deterministic evidence hardening",
+        ha="left",
+        va="center",
+        fontsize=9.5,
+        color="#475569",
+    )
 
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
