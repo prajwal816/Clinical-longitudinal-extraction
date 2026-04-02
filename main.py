@@ -8,20 +8,20 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from clinical_nlp_assignment.data_loader import load_patient_list
-from clinical_nlp_assignment.inference import InferenceConfig, run_patient
-from clinical_nlp_assignment.llm_client import OpenAICompatibleClient, load_llm_config_from_env
+from Clinical_Nlp_Extraaction.data_loader import load_patient_list
+from Clinical_Nlp_Extraaction.inference import InferenceConfig, run_patient
+from Clinical_Nlp_Extraaction.llm_client import OpenAICompatibleClient, load_llm_config_from_env
 
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Clinical condition extraction pipeline")
-    p.add_argument("--data-dir", required=True, help="Path to data directory (e.g. ./clinical_nlp_assignment/dev)")
+    p.add_argument("--data-dir", required=True, help="Path to data directory (e.g. ./Data/dev)")
     p.add_argument("--patient-list", required=True, help="Path to JSON list of patient IDs")
     p.add_argument("--output-dir", required=True, help="Directory to write patient_XX.json outputs")
     p.add_argument(
         "--taxonomy-path",
-        default=str(Path(__file__).parent / "clinical_nlp_assignment" / "taxonomy.json"),
-        help="Path to taxonomy.json (default: clinical_nlp_assignment/taxonomy.json)",
+        default=str(Path(__file__).parent / "Data" / "taxonomy.json"),
+        help="Path to taxonomy.json (default: Data/taxonomy.json)",
     )
     p.add_argument(
         "--cache-dir",
