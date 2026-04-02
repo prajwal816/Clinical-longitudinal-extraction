@@ -105,6 +105,10 @@ class OpenAICompatibleClient:
         self.client = OpenAI(base_url=config.base_url, api_key=config.api_key)
         self.usage = TokenUsage()
 
+    def token_summary(self) -> str:
+        """Human-readable token/cost/latency summary for logging."""
+        return self.usage.summary()
+
     @retry(stop=stop_after_attempt(4), wait=wait_exponential_jitter(initial=1, max=30))
     def json_chat(self, *, system: str, user: str) -> dict[str, Any]:
         t0 = time.monotonic()
