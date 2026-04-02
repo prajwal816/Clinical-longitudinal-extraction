@@ -64,7 +64,7 @@ def make_pipeline(assets: Path) -> None:
 
 
 def make_taxonomy_overview(assets: Path, repo_root: Path) -> None:
-    taxonomy_path = repo_root / "clinical_nlp_assignment" / "taxonomy.json"
+    taxonomy_path = repo_root / "Data" / "taxonomy.json"
     taxonomy = json.loads(taxonomy_path.read_text(encoding="utf-8"))
 
     cats = taxonomy["condition_categories"]
@@ -101,7 +101,7 @@ def make_metrics_template(assets: Path) -> None:
     ax.text(
         0.5,
         -0.18,
-        "Update after running: python -m clinical_nlp_assignment.train",
+        "Update after running: python -m Clinical_Nlp_Extraction.train",
         transform=ax.transAxes,
         ha="center",
         va="top",
@@ -138,8 +138,8 @@ def _count_note_files(patient_dir: Path) -> int:
 
 
 def make_dataset_stats(assets: Path, repo_root: Path) -> None:
-    train_dir = repo_root / "clinical_nlp_assignment" / "train"
-    dev_dir = repo_root / "clinical_nlp_assignment" / "dev"
+    train_dir = repo_root / "Data" / "train"
+    dev_dir = repo_root / "Data" / "dev"
     train_labels_dir = train_dir / "labels"
 
     # Notes-per-patient (histograms)
