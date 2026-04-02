@@ -11,6 +11,8 @@ build/
 .cache/
 output/
 out_*/
+.cache_*/
+output_*/
 
 # IDE
 .vscode/
