@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from openai import BadRequestError, OpenAI
+from openai import OpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential_jitter
 
 from .utils import read_env_required
@@ -36,68 +36,78 @@ def load_llm_config_from_env(
     )
 
 
-_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)```", re.DOTALL)
+def _extract_json_from_text(text: str) -> dict[str, Any]:
+    """Extract JSON from text that may contain markdown fences or prose.
 
-
-def _extract_json(text: str) -> dict[str, Any]:
-    """Try to parse text as JSON.  If it fails, look for a fenced code block."""
+    Handles cases where the model wraps JSON in ```json ... ``` blocks
+    or includes explanatory text around the JSON.
+    """
+    # Try direct parse first
     text = text.strip()
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
+
     # Try extracting from fenced code block
-    m = _JSON_FENCE_RE.search(text)
-    if m:
+    fence_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", text, re.DOTALL)
+    if fence_match:
         try:
-            return json.loads(m.group(1).strip())
+            return json.loads(fence_match.group(1).strip())
         except json.JSONDecodeError:
             pass
-    # Last resort: find first { ... } block
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end != -1 and end > start:
+
+    # Try finding the outermost { ... } block
+    brace_start = text.find("{")
+    brace_end = text.rfind("}")
+    if brace_start != -1 and brace_end > brace_start:
         try:
-            return json.loads(text[start : end + 1])
+            return json.loads(text[brace_start : brace_end + 1])
         except json.JSONDecodeError:
             pass
-    raise ValueError(f"Could not extract JSON from LLM response: {text[:200]}...")
+
+    # Last resort: return empty
+    logger.warning("Could not parse JSON from LLM response, returning empty dict")
+    return {}
+
+
+@dataclass
+class TokenUsage:
+    """Accumulates token usage across all API calls."""
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_calls: int = 0
+    total_latency_s: float = 0.0
+
+    @property
+    def total_tokens(self) -> int:
+        return self.prompt_tokens + self.completion_tokens
+
+    def record(self, prompt: int, completion: int, latency: float) -> None:
+        self.prompt_tokens += prompt
+        self.completion_tokens += completion
+        self.total_calls += 1
+        self.total_latency_s += latency
+
+    def summary(self) -> str:
+        avg_latency = (self.total_latency_s / self.total_calls) if self.total_calls else 0
+        return (
+            f"LLM Usage: {self.total_calls} calls | "
+            f"{self.prompt_tokens:,} prompt + {self.completion_tokens:,} completion = "
+            f"{self.total_tokens:,} total tokens | "
+            f"{self.total_latency_s:.1f}s total ({avg_latency:.1f}s avg)"
+        )
 
 
 class OpenAICompatibleClient:
     def __init__(self, config: LLMConfig):
         self.config = config
         self.client = OpenAI(base_url=config.base_url, api_key=config.api_key)
-        self._total_prompt_tokens: int = 0
-        self._total_completion_tokens: int = 0
-        self._total_calls: int = 0
+        self.usage = TokenUsage()
 
-    @property
-    def total_prompt_tokens(self) -> int:
-        return self._total_prompt_tokens
-
-    @property
-    def total_completion_tokens(self) -> int:
-        return self._total_completion_tokens
-
-    @property
-    def total_tokens(self) -> int:
-        return self._total_prompt_tokens + self._total_completion_tokens
-
-    @property
-    def total_calls(self) -> int:
-        return self._total_calls
-
-    def token_summary(self) -> str:
-        return (
-            f"LLM Usage: {self._total_calls} calls | "
-            f"prompt={self._total_prompt_tokens:,} + completion={self._total_completion_tokens:,} "
-            f"= {self.total_tokens:,} total tokens"
-        )
-
-    @retry(stop=stop_after_attempt(4), wait=wait_exponential_jitter(initial=1, max=20))
+    @retry(stop=stop_after_attempt(4), wait=wait_exponential_jitter(initial=1, max=30))
     def json_chat(self, *, system: str, user: str) -> dict[str, Any]:
-        t0 = time.perf_counter()
+        t0 = time.monotonic()
         try:
             resp = self.client.chat.completions.create(
                 model=self.config.model,
@@ -109,37 +119,41 @@ class OpenAICompatibleClient:
                     {"role": "user", "content": user},
                 ],
             )
-        except BadRequestError:
+        except Exception as e:
             # Some providers don't support response_format; fall back
-            logger.warning("response_format=json_object not supported; retrying without it.")
-            resp = self.client.chat.completions.create(
-                model=self.config.model,
-                temperature=self.config.temperature,
-                max_tokens=self.config.max_output_tokens,
-                messages=[
-                    {"role": "system", "content": system + "\n\nYou MUST respond with valid JSON only. No other text."},
-                    {"role": "user", "content": user},
-                ],
+            if "response_format" in str(e).lower() or "json_object" in str(e).lower():
+                logger.info("response_format not supported, falling back to plain chat")
+                resp = self.client.chat.completions.create(
+                    model=self.config.model,
+                    temperature=self.config.temperature,
+                    max_tokens=self.config.max_output_tokens,
+                    messages=[
+                        {"role": "system", "content": system + "\n\nYou MUST respond with valid JSON only, no other text."},
+                        {"role": "user", "content": user},
+                    ],
+                )
+            else:
+                raise
+
+        latency = time.monotonic() - t0
+
+        # Track token usage
+        if resp.usage:
+            self.usage.record(
+                prompt=resp.usage.prompt_tokens or 0,
+                completion=resp.usage.completion_tokens or 0,
+                latency=latency,
             )
 
-        elapsed = time.perf_counter() - t0
+        content = resp.choices[0].message.content or "{}"
+        result = _extract_json_from_text(content)
 
-        # Track tokens
-        usage = resp.usage
-        prompt_tok = getattr(usage, "prompt_tokens", 0) or 0
-        completion_tok = getattr(usage, "completion_tokens", 0) or 0
-        self._total_prompt_tokens += prompt_tok
-        self._total_completion_tokens += completion_tok
-        self._total_calls += 1
-
-        logger.info(
-            "LLM call #%d: model=%s prompt_tok=%d compl_tok=%d latency=%.1fs",
-            self._total_calls,
+        logger.debug(
+            "LLM call: model=%s tokens=%d+%d latency=%.1fs",
             self.config.model,
-            prompt_tok,
-            completion_tok,
-            elapsed,
+            resp.usage.prompt_tokens if resp.usage else 0,
+            resp.usage.completion_tokens if resp.usage else 0,
+            latency,
         )
 
-        content = resp.choices[0].message.content or "{}"
-        return _extract_json(content)
+        return result

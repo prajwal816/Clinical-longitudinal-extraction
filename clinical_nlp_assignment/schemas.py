@@ -17,6 +17,7 @@ class Evidence(BaseModel):
 
 
 class Condition(BaseModel):
+    # Use extra="ignore" so that LLMs adding extra fields don't break parsing.
     model_config = ConfigDict(extra="ignore")
 
     condition_name: str = Field(min_length=1)
@@ -69,4 +70,3 @@ def validate_condition_taxonomy(
         raise ValueError(
             f"Invalid subcategory for {condition.category}: {condition.subcategory}"
         )
-

@@ -70,7 +70,7 @@ def _format_onset_rules(taxonomy: dict[str, Any]) -> str:
     date_fmt = taxonomy.get("date_format", {})
     rules = date_fmt.get("onset_rules", [])
     lines: list[str] = [
-        "Date formats: full=\"16 March 2026\", month_year=\"March 2014\", year_only=\"2014\", unknown=null",
+        'Date formats: full="16 March 2026", month_year="March 2014", year_only="2014", unknown=null',
         "",
         "Onset priority rules:",
     ]
@@ -87,7 +87,7 @@ def _format_valid_keys_compact(taxonomy: dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Few-shot example
+# Few-shot example (curated from real training data patterns)
 # ---------------------------------------------------------------------------
 
 _FEW_SHOT_NOTE = """\
@@ -99,11 +99,24 @@ _FEW_SHOT_NOTE = """\
 6: - Arterial hypertension
 7: - Non-insulin-dependent diabetes mellitus type II
 8:
-9: **Medical History:**
+9: **Other Diagnoses:**
 10: - Hypothyroidism
 11: - Status post cholecystectomy in 2010
 12:
-13: **Therapy:** Blood pressure well controlled on Ramipril 5 mg.
+13: **Medical History:**
+14: - Liver cirrhosis
+15: - Idiopathic thrombocytopenia
+16:
+17: **Ultrasound abdomen:**
+18: Image of liver cirrhosis. Hepatosplenomegaly. Moderate aortic sclerosis.
+19:
+20: **Lab results:**
+21:
+22:   Parameter        Result         Reference Range
+23:   Hemoglobin       8.2 g/dL       14 - 18 g/dL
+24:   RBC              2.7M /μL       4.5M - 5.9M /μL
+25:
+26: **Therapy:** Blood pressure well controlled on Ramipril 5 mg.
 """
 
 _FEW_SHOT_OUTPUT = """\
@@ -114,7 +127,7 @@ _FEW_SHOT_OUTPUT = """\
       "category": "cardiovascular",
       "subcategory": "hypertensive",
       "status": "active",
-      "onset": null,
+      "onset": "May 2014",
       "evidence": [{"note_id": "text_0", "line_no": 6, "span": "Arterial hypertension"}]
     },
     {
@@ -122,7 +135,7 @@ _FEW_SHOT_OUTPUT = """\
       "category": "metabolic_endocrine",
       "subcategory": "diabetes",
       "status": "active",
-      "onset": null,
+      "onset": "May 2014",
       "evidence": [{"note_id": "text_0", "line_no": 7, "span": "Non-insulin-dependent diabetes mellitus type II"}]
     },
     {
@@ -130,8 +143,54 @@ _FEW_SHOT_OUTPUT = """\
       "category": "metabolic_endocrine",
       "subcategory": "thyroid",
       "status": "active",
-      "onset": null,
+      "onset": "May 2014",
       "evidence": [{"note_id": "text_0", "line_no": 10, "span": "Hypothyroidism"}]
+    },
+    {
+      "condition_name": "Liver cirrhosis",
+      "category": "gastrointestinal",
+      "subcategory": "hepatic",
+      "status": "active",
+      "onset": "May 2014",
+      "evidence": [
+        {"note_id": "text_0", "line_no": 14, "span": "Liver cirrhosis"},
+        {"note_id": "text_0", "line_no": 18, "span": "Image of liver cirrhosis. Hepatosplenomegaly. Moderate aortic sclerosis."}
+      ]
+    },
+    {
+      "condition_name": "Idiopathic thrombocytopenia",
+      "category": "hematological",
+      "subcategory": "cytopenia",
+      "status": "active",
+      "onset": "May 2014",
+      "evidence": [{"note_id": "text_0", "line_no": 15, "span": "Idiopathic thrombocytopenia"}]
+    },
+    {
+      "condition_name": "Hepatosplenomegaly",
+      "category": "gastrointestinal",
+      "subcategory": "hepatic",
+      "status": "active",
+      "onset": "May 2014",
+      "evidence": [{"note_id": "text_0", "line_no": 18, "span": "Image of liver cirrhosis. Hepatosplenomegaly. Moderate aortic sclerosis."}]
+    },
+    {
+      "condition_name": "Aortic sclerosis",
+      "category": "cardiovascular",
+      "subcategory": "vascular",
+      "status": "active",
+      "onset": "May 2014",
+      "evidence": [{"note_id": "text_0", "line_no": 18, "span": "Image of liver cirrhosis. Hepatosplenomegaly. Moderate aortic sclerosis."}]
+    },
+    {
+      "condition_name": "Anemia",
+      "category": "hematological",
+      "subcategory": "cytopenia",
+      "status": "active",
+      "onset": "May 2014",
+      "evidence": [
+        {"note_id": "text_0", "line_no": 23, "span": "Hemoglobin       8.2 g/dL       14 - 18 g/dL"},
+        {"note_id": "text_0", "line_no": 24, "span": "RBC              2.7M /μL       4.5M - 5.9M /μL"}
+      ]
     }
   ]
 }"""
@@ -144,9 +203,15 @@ def _build_few_shot_block() -> str:
         "INPUT NOTE (note_id: text_0):\n"
         f"{_FEW_SHOT_NOTE}\n"
         "EXPECTED OUTPUT:\n"
-        f"{_FEW_SHOT_OUTPUT}\n"
-        "NOTE: 'Status post cholecystectomy' is a surgical procedure, not a condition in the taxonomy, so it is NOT extracted.\n"
-        "NOTE: Hypothyroidism in Medical History is marked 'active' because it is a chronic ongoing condition being managed, not a past event.\n"
+        f"{_FEW_SHOT_OUTPUT}\n\n"
+        "Key observations from this example:\n"
+        "- 'Status post cholecystectomy' is a surgical PROCEDURE, not a taxonomy condition → NOT extracted.\n"
+        "- Hypothyroidism in 'Other Diagnoses' is a chronic ongoing condition → status 'active'.\n"
+        "- Liver cirrhosis appears in Medical History AND on imaging → evidence from BOTH lines.\n"
+        "- Hepatosplenomegaly is a SEPARATE condition from liver cirrhosis → separate entry.\n"
+        "- Aortic sclerosis → cardiovascular.vascular (NOT structural).\n"
+        "- Anemia is extracted from abnormal lab values (Hgb 8.2, low RBC) even though 'anemia' isn't explicitly named.\n"
+        "- Onset uses the note's encounter date (May 2014) since no stated date exists for any condition.\n"
         "=== END EXAMPLE ===\n"
     )
 
@@ -167,7 +232,7 @@ def build_note_system_prompt(taxonomy: dict[str, Any]) -> str:
     return f"""\
 You are an expert clinical information extraction system.
 
-TASK: Extract ALL clinically significant diagnoses and findings from ONE clinical note that map to the provided taxonomy.
+TASK: Extract ALL clinically significant diagnoses and findings from ONE clinical note that map to the provided taxonomy. Be thorough — it is better to over-include than to miss conditions.
 
 ## TAXONOMY (use ONLY these category/subcategory keys)
 
@@ -187,13 +252,15 @@ TASK: Extract ALL clinically significant diagnoses and findings from ONE clinica
 
 ## EXTRACTION GUIDELINES
 
-1. Extract conditions from ALL sections: Diagnoses, Other Diagnoses, Medical History, narrative text, imaging reports, lab results.
-2. Conditions in "Medical History" or preceded by "status post" / "history of" → status "resolved" unless later notes show recurrence.
+1. Extract conditions from ALL sections: Diagnoses, Other Diagnoses, Medical History, narrative text, imaging reports, lab results, physical examination findings.
+2. Conditions in "Medical History" or preceded by "status post" / "history of" → status "resolved" UNLESS they are chronic/ongoing conditions being managed (e.g., hypothyroidism, diabetes, hypertension → these remain "active").
 3. Conditions in "Diagnoses" or "Other Diagnoses" → status "active" unless explicitly noted as resolved/suspected.
-4. For lab abnormalities (e.g., low hemoglobin, low platelets), extract the clinical condition they indicate (e.g., anemia, thrombocytopenia) using the hematological category.
-5. For imaging findings that indicate a condition (e.g., "liver cirrhosis" on CT), extract the condition.
-6. Do NOT invent conditions not mentioned. Do NOT extract symptoms alone (e.g., "cough") — only named diagnoses or clinically significant findings.
-7. One entry per distinct condition. Separate entries for different anatomical sites (e.g., brain metastasis vs liver metastasis).
+4. For lab abnormalities significantly outside reference ranges that indicate a clinical condition (e.g., low hemoglobin → anemia, low platelets → thrombocytopenia, low lymphocytes → lymphopenia), extract the condition even if not explicitly named.
+5. For imaging findings that name a condition (e.g., "liver cirrhosis" on CT, "cardiomegaly" on X-ray), extract the condition.
+6. Do NOT extract symptoms alone (e.g., "cough", "fatigue") — only named diagnoses or clinically significant findings.
+7. Do NOT extract surgical procedures (e.g., "cholecystectomy", "tracheotomy") — only the underlying conditions.
+8. One entry per distinct condition. Separate entries for different anatomical sites (e.g., brain metastasis vs liver metastasis).
+9. When a condition name includes a site or qualifier, preserve it (e.g., "Squamous cell carcinoma of the left tongue base", not just "Squamous cell carcinoma").
 
 ## OUTPUT FORMAT
 
@@ -204,7 +271,7 @@ Return ONLY valid JSON:
     "category": "exact_taxonomy_key",
     "subcategory": "exact_taxonomy_key",
     "status": "active|resolved|suspected",
-    "onset": "date or null",
+    "onset": "date string or null",
     "evidence": [{{"note_id": "...", "line_no": N, "span": "exact text from note line"}}]
   }}
 ]}}
@@ -248,7 +315,7 @@ def build_patient_system_prompt(taxonomy: dict[str, Any]) -> str:
     return f"""\
 You are an expert clinical information extraction system.
 
-TASK: Build a longitudinal condition summary for ONE PATIENT by consolidating condition mentions across multiple notes.
+TASK: Build a FINAL longitudinal condition summary for ONE PATIENT by consolidating condition mentions extracted from multiple clinical notes. This is the definitive output — it must be complete, accurate, and precisely formatted.
 
 ## TAXONOMY
 
@@ -268,12 +335,17 @@ TASK: Build a longitudinal condition summary for ONE PATIENT by consolidating co
 
 ## CONSOLIDATION RULES
 
-1. **Deduplication**: If two candidates refer to the same underlying condition (e.g., "Diabetes mellitus type II" and "Non-insulin-dependent diabetes mellitus type II"), merge them into ONE entry. Use the most specific/complete name.
-2. **Status**: Use the status from the chronologically LATEST note where the condition appears. Notes are provided in chronological order (earliest to latest).
-3. **Onset**: Use the EARLIEST explicit documentation date, following the onset priority rules above. If one candidate has a stated date and another has only a note date, prefer the stated date.
-4. **Evidence**: MUST include excerpts from EVERY note where the condition is mentioned. Do NOT drop evidence from earlier notes. Use ONLY the provided evidence spans verbatim.
-5. **Separate entries**: Maintain separate entries for different metastatic sites, different anatomical sites, or different conditions even if related.
-6. **Do not add conditions**: Only consolidate conditions present in the evidence candidates. Do not invent new conditions.
+1. **Deduplication**: If two or more candidates refer to the SAME underlying condition (e.g., "Diabetes mellitus type II" and "Non-insulin-dependent diabetes mellitus type II"; or "Tongue base carcinoma" and "Squamous cell carcinoma of the left tongue base"), merge them into ONE entry. Use the most specific/complete/descriptive name.
+2. **Status**: Use the status from the chronologically LATEST note where the condition appears. Notes are provided in chronological order (text_0 = earliest, text_N = latest). If a condition appears as "suspected" in text_0 and "active" in text_3, report "active". If it appears "active" in text_1 but is never mentioned again, keep "active".
+3. **Onset**: Use the EARLIEST explicit documentation date, following the onset priority rules above. If one candidate has a stated date (e.g., "first diagnosed 03/2021") and another has only a note date, prefer the stated date.
+4. **Evidence MUST be comprehensive**: Include evidence from EVERY note where the condition is mentioned. If a condition appears in 6 notes, there MUST be evidence entries from all 6 notes. Do NOT drop evidence from earlier notes.
+5. **Evidence spans**: Use ONLY the provided evidence spans verbatim. Do NOT edit, paraphrase, truncate, or combine spans.
+6. **Separate entries**: Maintain separate entries for:
+   - Different metastatic sites (brain metastasis vs liver metastasis)
+   - Different anatomical sites of the same condition type
+   - Distinct conditions even if related (e.g., liver cirrhosis vs hepatosplenomegaly)
+7. **Do not add conditions**: Only consolidate conditions present in the evidence candidates. Do not invent new conditions.
+8. **Date format**: Use "16 March 2026", "March 2014", "2014", or null.
 
 ## OUTPUT FORMAT
 

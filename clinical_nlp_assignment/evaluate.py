@@ -1,7 +1,18 @@
+"""
+Evaluation framework for clinical condition extraction.
+
+Computes multi-dimensional metrics matching the official evaluation criteria:
+- Condition identification (P/R/F1)
+- Status accuracy
+- Onset/date accuracy
+- Evidence quality (recall and precision)
+"""
+
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Iterable
+import re
+from dataclasses import dataclass, field
+from typing import Iterable
 
 from rapidfuzz import fuzz
 
@@ -16,15 +27,52 @@ class PRF1:
     f1: float
 
 
-@dataclass(frozen=True)
+@dataclass
 class DetailedScore:
-    """Rich evaluation score for a single patient."""
-    condition_prf1: PRF1
-    status_accuracy: float  # among matched conditions, % correct status
-    onset_accuracy: float   # among matched, % correct onset (exact string)
-    onset_partial: float    # among matched, % with partial date overlap
-    evidence_recall: float  # among matched, % of GT evidence note_ids covered
-    evidence_precision: float  # among matched, ratio of relevant to total evidence
+    """Multi-dimensional evaluation for a single patient."""
+    patient_id: str = ""
+    # Condition identification
+    condition_precision: float = 0.0
+    condition_recall: float = 0.0
+    condition_f1: float = 0.0
+    tp: int = 0
+    fp: int = 0
+    fn: int = 0
+    # Status accuracy (among matched conditions)
+    status_correct: int = 0
+    status_total: int = 0
+    # Onset accuracy (among matched conditions)
+    onset_exact_correct: int = 0
+    onset_partial_correct: int = 0
+    onset_total: int = 0
+    # Evidence quality (among matched conditions)
+    evidence_note_recall_sum: float = 0.0  # fraction of GT evidence note_ids covered
+    evidence_count: int = 0  # number of matched conditions with evidence comparison
+
+    @property
+    def status_accuracy(self) -> float:
+        return self.status_correct / self.status_total if self.status_total else 0.0
+
+    @property
+    def onset_exact_accuracy(self) -> float:
+        return self.onset_exact_correct / self.onset_total if self.onset_total else 0.0
+
+    @property
+    def onset_partial_accuracy(self) -> float:
+        return self.onset_partial_correct / self.onset_total if self.onset_total else 0.0
+
+    @property
+    def evidence_note_recall(self) -> float:
+        return self.evidence_note_recall_sum / self.evidence_count if self.evidence_count else 0.0
+
+    def summary_line(self) -> str:
+        return (
+            f"{self.patient_id}: "
+            f"P={self.condition_precision:.3f} R={self.condition_recall:.3f} F1={self.condition_f1:.3f} | "
+            f"Status={self.status_accuracy:.3f} | "
+            f"Onset(exact)={self.onset_exact_accuracy:.3f} Onset(partial)={self.onset_partial_accuracy:.3f} | "
+            f"EvidRecall={self.evidence_note_recall:.3f}"
+        )
 
 
 def _cond_key(p: dict) -> ConditionKey:
@@ -41,155 +89,114 @@ def _match_score(a: ConditionKey, b: ConditionKey) -> int:
     return fuzz.ratio(a.name_norm, b.name_norm)
 
 
-def _onset_partial_match(true_onset: str | None, pred_onset: str | None) -> float:
-    """Return partial credit for onset date matching.
-
-    - Exact match: 1.0
-    - Year matches: 0.5
-    - Both null: 1.0
-    - One null, other not: 0.0
-    """
-    if true_onset == pred_onset:
-        return 1.0
-    if true_onset is None or pred_onset is None:
-        return 0.0
-    # Check if year matches
-    true_parts = true_onset.strip().split()
-    pred_parts = pred_onset.strip().split()
-    true_year = true_parts[-1] if true_parts else ""
-    pred_year = pred_parts[-1] if pred_parts else ""
-    if true_year and pred_year and true_year == pred_year:
-        return 0.5
-    return 0.0
+def _normalize_date(d: str | None) -> str | None:
+    """Normalize date string for comparison."""
+    if d is None:
+        return None
+    d = d.strip()
+    if not d:
+        return None
+    return d
 
 
-def _match_conditions(
-    y_true: PatientOutput,
-    y_pred: PatientOutput,
-    name_fuzzy_threshold: int = 94,
-) -> list[tuple[int, int]]:
-    """Return list of (true_idx, pred_idx) matched pairs."""
-    true_keys = [_cond_key(c.model_dump()) for c in y_true.conditions]
-    pred_keys = [_cond_key(c.model_dump()) for c in y_pred.conditions]
-
-    matched: list[tuple[int, int]] = []
-    used_true: set[int] = set()
-    used_pred: set[int] = set()
-
-    for pi, pk in enumerate(pred_keys):
-        best = (-1, -1)
-        for ti, tk in enumerate(true_keys):
-            if ti in used_true:
-                continue
-            s = _match_score(pk, tk)
-            if s > best[0]:
-                best = (s, ti)
-        if best[0] >= name_fuzzy_threshold and best[1] >= 0:
-            matched.append((best[1], pi))
-            used_true.add(best[1])
-            used_pred.add(pi)
-
-    return matched
-
-
-def compute_prf1(
-    *,
-    y_true: PatientOutput,
-    y_pred: PatientOutput,
-    name_fuzzy_threshold: int = 94,
-) -> PRF1:
-    """
-    Practical metric for dev iteration:
-    - requires category+subcategory match
-    - condition_name matched via fuzzy ratio
-    """
-    matched = _match_conditions(y_true, y_pred, name_fuzzy_threshold)
-
-    tp = len(matched)
-    fp = len(y_pred.conditions) - tp
-    fn = len(y_true.conditions) - tp
-
-    precision = tp / (tp + fp) if (tp + fp) else 0.0
-    recall = tp / (tp + fn) if (tp + fn) else 0.0
-    f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
-    return PRF1(precision=precision, recall=recall, f1=f1)
+def _dates_partial_match(pred: str | None, true: str | None) -> bool:
+    """Check if dates partially match (year matches at minimum)."""
+    if pred is None and true is None:
+        return True
+    if pred is None or true is None:
+        return False
+    # Extract years
+    pred_years = re.findall(r"\d{4}", pred)
+    true_years = re.findall(r"\d{4}", true)
+    if pred_years and true_years:
+        return pred_years[-1] == true_years[-1]
+    return pred.strip().lower() == true.strip().lower()
 
 
 def compute_detailed_score(
     *,
     y_true: PatientOutput,
     y_pred: PatientOutput,
-    name_fuzzy_threshold: int = 94,
+    name_fuzzy_threshold: int = 88,
 ) -> DetailedScore:
-    """Compute all evaluation dimensions for a patient."""
-    matched = _match_conditions(y_true, y_pred, name_fuzzy_threshold)
+    """Compute multi-dimensional evaluation metrics for one patient."""
+    score = DetailedScore(patient_id=y_true.patient_id)
 
-    tp = len(matched)
-    fp = len(y_pred.conditions) - tp
-    fn = len(y_true.conditions) - tp
+    true_conds = [(i, _cond_key(c.model_dump()), c) for i, c in enumerate(y_true.conditions)]
+    pred_conds = [(i, _cond_key(c.model_dump()), c) for i, c in enumerate(y_pred.conditions)]
 
-    precision = tp / (tp + fp) if (tp + fp) else 0.0
-    recall = tp / (tp + fn) if (tp + fn) else 0.0
-    f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
-    prf1 = PRF1(precision=precision, recall=recall, f1=f1)
+    matched_true: set[int] = set()
+    matched_pred: set[int] = set()
+    matches: list[tuple[Condition, Condition]] = []  # (true_cond, pred_cond)
 
-    if not matched:
-        return DetailedScore(
-            condition_prf1=prf1,
-            status_accuracy=0.0,
-            onset_accuracy=0.0,
-            onset_partial=0.0,
-            evidence_recall=0.0,
-            evidence_precision=0.0,
-        )
+    # Greedy matching: for each predicted, find best unmatched true
+    for pi, pk, pc in pred_conds:
+        best = (-1, -1, None)
+        for ti, tk, tc in true_conds:
+            if ti in matched_true:
+                continue
+            s = _match_score(pk, tk)
+            if s > best[0]:
+                best = (s, ti, tc)
+        if best[0] >= name_fuzzy_threshold and best[1] >= 0:
+            matched_pred.add(pi)
+            matched_true.add(best[1])
+            matches.append((best[2], pc))  # type: ignore
 
-    # Status accuracy
-    status_correct = 0
-    for ti, pi in matched:
-        if y_true.conditions[ti].status == y_pred.conditions[pi].status:
-            status_correct += 1
-    status_acc = status_correct / len(matched)
+    tp = len(matches)
+    fp = len(pred_conds) - tp
+    fn = len(true_conds) - len(matched_true)
 
-    # Onset accuracy (exact and partial)
-    onset_exact = 0
-    onset_partial_sum = 0.0
-    for ti, pi in matched:
-        true_onset = y_true.conditions[ti].onset
-        pred_onset = y_pred.conditions[pi].onset
-        if true_onset == pred_onset:
-            onset_exact += 1
-        onset_partial_sum += _onset_partial_match(true_onset, pred_onset)
-    onset_acc = onset_exact / len(matched)
-    onset_partial_acc = onset_partial_sum / len(matched)
-
-    # Evidence recall and precision
-    ev_recall_sum = 0.0
-    ev_precision_sum = 0.0
-    for ti, pi in matched:
-        true_note_ids = {e.note_id for e in y_true.conditions[ti].evidence}
-        pred_note_ids = {e.note_id for e in y_pred.conditions[pi].evidence}
-
-        if true_note_ids:
-            ev_recall_sum += len(true_note_ids & pred_note_ids) / len(true_note_ids)
-        else:
-            ev_recall_sum += 1.0  # no GT evidence to miss
-
-        if pred_note_ids:
-            ev_precision_sum += len(true_note_ids & pred_note_ids) / len(pred_note_ids)
-        else:
-            ev_precision_sum += 0.0
-
-    ev_recall = ev_recall_sum / len(matched)
-    ev_precision = ev_precision_sum / len(matched)
-
-    return DetailedScore(
-        condition_prf1=prf1,
-        status_accuracy=status_acc,
-        onset_accuracy=onset_acc,
-        onset_partial=onset_partial_acc,
-        evidence_recall=ev_recall,
-        evidence_precision=ev_precision,
+    score.tp = tp
+    score.fp = fp
+    score.fn = fn
+    score.condition_precision = tp / (tp + fp) if (tp + fp) else 0.0
+    score.condition_recall = tp / (tp + fn) if (tp + fn) else 0.0
+    score.condition_f1 = (
+        (2 * score.condition_precision * score.condition_recall /
+         (score.condition_precision + score.condition_recall))
+        if (score.condition_precision + score.condition_recall) else 0.0
     )
+
+    # Evaluate matched conditions on status, onset, evidence
+    for true_c, pred_c in matches:
+        # Status
+        score.status_total += 1
+        if pred_c.status == true_c.status:
+            score.status_correct += 1
+
+        # Onset
+        true_onset = _normalize_date(true_c.onset)
+        pred_onset = _normalize_date(pred_c.onset)
+        score.onset_total += 1
+        if true_onset == pred_onset:
+            score.onset_exact_correct += 1
+            score.onset_partial_correct += 1
+        elif _dates_partial_match(pred_onset, true_onset):
+            score.onset_partial_correct += 1
+
+        # Evidence note recall: fraction of GT evidence note_ids present in pred
+        true_note_ids = {ev.note_id for ev in true_c.evidence}
+        pred_note_ids = {ev.note_id for ev in pred_c.evidence}
+        if true_note_ids:
+            recall = len(true_note_ids & pred_note_ids) / len(true_note_ids)
+            score.evidence_note_recall_sum += recall
+            score.evidence_count += 1
+
+    return score
+
+
+def compute_prf1(
+    *,
+    y_true: PatientOutput,
+    y_pred: PatientOutput,
+    name_fuzzy_threshold: int = 88,
+) -> PRF1:
+    """Backward-compatible P/R/F1 computation."""
+    ds = compute_detailed_score(
+        y_true=y_true, y_pred=y_pred, name_fuzzy_threshold=name_fuzzy_threshold
+    )
+    return PRF1(precision=ds.condition_precision, recall=ds.condition_recall, f1=ds.condition_f1)
 
 
 def macro_average(scores: Iterable[PRF1]) -> PRF1:
@@ -204,18 +211,17 @@ def macro_average(scores: Iterable[PRF1]) -> PRF1:
 
 
 def macro_average_detailed(scores: Iterable[DetailedScore]) -> dict[str, float]:
-    """Compute macro averages over all detailed score dimensions."""
-    scores = list(scores)
-    if not scores:
+    """Compute macro-averaged metrics across patients."""
+    items = list(scores)
+    n = len(items)
+    if not n:
         return {}
-    n = len(scores)
     return {
-        "precision": sum(s.condition_prf1.precision for s in scores) / n,
-        "recall": sum(s.condition_prf1.recall for s in scores) / n,
-        "f1": sum(s.condition_prf1.f1 for s in scores) / n,
-        "status_accuracy": sum(s.status_accuracy for s in scores) / n,
-        "onset_accuracy": sum(s.onset_accuracy for s in scores) / n,
-        "onset_partial": sum(s.onset_partial for s in scores) / n,
-        "evidence_recall": sum(s.evidence_recall for s in scores) / n,
-        "evidence_precision": sum(s.evidence_precision for s in scores) / n,
+        "condition_precision": sum(s.condition_precision for s in items) / n,
+        "condition_recall": sum(s.condition_recall for s in items) / n,
+        "condition_f1": sum(s.condition_f1 for s in items) / n,
+        "status_accuracy": sum(s.status_accuracy for s in items) / n,
+        "onset_exact_accuracy": sum(s.onset_exact_accuracy for s in items) / n,
+        "onset_partial_accuracy": sum(s.onset_partial_accuracy for s in items) / n,
+        "evidence_note_recall": sum(s.evidence_note_recall for s in items) / n,
     }
