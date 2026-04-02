@@ -165,7 +165,7 @@ Evidence precision & Relevant / total predicted evidence entries \\
 
 \textbf{Script:}
 \begin{quote}
-\texttt{python -m clinical\_nlp\_assignment.train --data-dir ./clinical\_nlp\_assignment/train --taxonomy-path ./clinical\_nlp\_assignment/taxonomy.json --results-json ./results.json}
+\texttt{python -m Clinical\_Nlp\_Extraction.train --data-dir ./Data/train --taxonomy-path ./Data/taxonomy.json --results-json ./results.json}
 \end{quote}
 
 \section{Reproducibility and Running}
@@ -184,7 +184,7 @@ Evidence precision & Relevant / total predicted evidence entries \\
 
 \subsection{Inference}
 \begin{quote}
-\texttt{python main.py --data-dir ./clinical\_nlp\_assignment/dev --patient-list ./patients.json --output-dir ./output}
+\texttt{python main.py --data-dir ./Data/dev --patient-list ./patients.json --output-dir ./output}
 \end{quote}
 
 \subsection{Additional CLI Arguments}
@@ -205,7 +205,7 @@ Argument & Default & Description \\
 
 \subsection{Validate Outputs}
 \begin{quote}
-\texttt{python -m clinical\_nlp\_assignment.validate\_outputs --output-dir ./output --taxonomy-path ./clinical\_nlp\_assignment/taxonomy.json}
+\texttt{python -m Clinical\_Nlp\_Extraction.validate\_outputs --output-dir ./output --taxonomy-path ./Data/taxonomy.json}
 \end{quote}
 
 \section{Module Architecture}
