@@ -102,7 +102,7 @@ For each clinical note:
 \subsection{Stage B: Patient-Level Consolidation}
 All per-note candidates are consolidated into a single patient summary:
 \begin{itemize}[leftmargin=1.2em]
-  \item \textbf{Deduplication}: synonymous conditions within the same taxonomy slot are merged using fuzzy name matching ($\geq$ 94\% similarity).
+  \item \textbf{Deduplication}: synonymous conditions within the same taxonomy slot are merged using fuzzy name matching ($\geq$ 88\% similarity).
   \item \textbf{Status}: uses the status from the chronologically latest note where the condition appears.
   \item \textbf{Onset}: uses the earliest non-null onset, following the taxonomy's priority rules.
   \item \textbf{Evidence}: the LLM is explicitly instructed to include evidence from every note where the condition is mentioned.
@@ -113,9 +113,9 @@ If the consolidation output fails validation, the system falls back to a \textbf
 \subsection{Stage C: Evidence Hardening (Deterministic Post-Pass)}
 After consolidation, a deterministic pass scans all note lines for missed evidence:
 \begin{itemize}[leftmargin=1.2em]
-  \item Matches the full condition name (case-insensitive) and known clinical abbreviations (e.g., ``ARDS'', ``COPD'', ``NIDDM'').
-  \item Adds missing evidence entries conservatively (minimum 5-character term length to avoid noisy matches).
-  \item Deduplicates evidence by \texttt{(note\_id, line\_no)} and verifies span exactness.
+  \item Uses fuzzy partial matching between normalized \texttt{condition\_name} and normalized note lines (fuzzy partial ratio $\geq$ 90) to detect missing mentions.
+  \item Adds at most one missing evidence entry per missing note (first matching line), using the exact line text as \texttt{span}.
+  \item Deduplicates evidence by \texttt{(note\_id, line\_no)}.
 \end{itemize}
 
 \subsection{Caching, Cost, and Determinism}
@@ -129,10 +129,10 @@ After consolidation, a deterministic pass scans all note lines for missed eviden
 \section{Key Design Decisions}
 
 \begin{enumerate}[leftmargin=1.2em]
-  \item \textbf{Full taxonomy in prompts}: Including subcategory descriptions and examples ($\sim$15K char system prompt) substantially improves category assignment accuracy vs.\ keys-only.
+  \item \textbf{Full taxonomy in prompts}: Including subcategory descriptions and examples improves category assignment accuracy vs.\ keys-only.
   \item \textbf{Disambiguation rules verbatim}: Prevents common errors (e.g., diabetic nephropathy classified under renal instead of \texttt{metabolic\_endocrine.diabetes}).
   \item \textbf{Increased max\_output\_tokens (4096)}: Prevents truncation for patients with many conditions (e.g., patient\_16 has 23+ conditions).
-  \item \textbf{Conservative evidence hardening}: Only matches full condition name and known abbreviations — does \emph{not} decompose names into individual words to avoid noisy false matches.
+  \item \textbf{Conservative evidence hardening}: Uses fuzzy partial matching on normalized strings, avoiding word-level decomposition to reduce noisy false matches.
   \item \textbf{Schema relaxation}: \texttt{extra="ignore"} on Pydantic models so LLMs adding extra fields (e.g., ``confidence'') don't crash the pipeline.
 \end{enumerate}
 
@@ -146,7 +146,7 @@ The repository includes a rich evaluation framework (\texttt{evaluate.py}, \text
 \toprule
 Metric & Description \\
 \midrule
-Condition P/R/F1 & Category + subcategory match, fuzzy name match ($\geq 94\%$) \\
+Condition P/R/F1 & Category + subcategory match, fuzzy name match ($\geq 88\%$) \\
 Status accuracy & Correct status among matched conditions \\
 Onset accuracy & Exact string match on onset date \\
 Onset partial & Year-level match ($0.5$ credit) \\
