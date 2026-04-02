@@ -184,7 +184,44 @@ export OPENAI_API_KEY="..."
 export OPENAI_MODEL="..."
 ```
 
-### 7.3 Run Inference
+### 7.3 Test Runs (Dry-run vs API)
+
+This project supports two types of runs:
+
+- **Dry-run** (`--dry-run`): verifies CLI wiring and output file generation without any LLM calls.
+- **Real API run** (no `--dry-run`): performs extraction using the OpenAI-compatible API specified by the evaluator (or your local provider such as OpenRouter).
+
+#### Dry-run (no API required)
+
+```bash
+python main.py \
+  --data-dir ./Data/dev \
+  --patient-list ./patients_dev.json \
+  --output-dir ./output_dry \
+  --dry-run
+```
+
+Expected:
+- One `patient_XX.json` per patient with `"conditions": []`
+- `_manifest.json` in the output directory
+
+#### Real run (API required)
+
+```bash
+python main.py \
+  --data-dir ./Data/dev \
+  --patient-list ./patients_dev.json \
+  --output-dir ./output_real \
+  --cache-dir ./.cache_openrouter \
+  --temperature 0
+```
+
+Expected:
+- HTTP calls to `OPENAI_BASE_URL` (visible if `--verbose` is used)
+- A token usage summary printed at the end (e.g., “LLM Usage: N calls | … tokens …”)
+- Non-empty `"conditions"` arrays in output files for most patients
+
+### 7.4 Run Inference (evaluation entrypoint)
 
 ```bash
 python main.py \
@@ -194,7 +231,7 @@ python main.py \
   --cache-dir ./.cache
 ```
 
-### 7.4 Additional CLI Arguments
+### 7.5 Additional CLI Arguments
 
 | Argument | Default | Description |
 |----------|---------|-------------|
@@ -204,7 +241,7 @@ python main.py \
 | `--verbose` | off | Enable debug logging |
 | `--dry-run` | off | Write empty outputs (no LLM calls) |
 
-### 7.5 Validate Outputs (Schema + Taxonomy)
+### 7.6 Validate Outputs (Schema + Taxonomy)
 
 ```bash
 python -m Clinical_Nlp_Extraction.validate_outputs \
@@ -212,7 +249,7 @@ python -m Clinical_Nlp_Extraction.validate_outputs \
   --taxonomy-path ./Data/taxonomy.json
 ```
 
-### 7.6 Evaluate on Training Data
+### 7.7 Evaluate on Training Data
 
 ```bash
 python -m Clinical_Nlp_Extraction.train \
@@ -258,6 +295,12 @@ Clinical_Nlp_Extraction/
 ├── train.py                # Training set evaluation with detailed reporting
 ├── validate_outputs.py     # Schema+taxonomy validation for output files
 ├── utils.py                # Hashing, normalization, file I/O helpers
-├── taxonomy.json           # Condition taxonomy
-└── problem_statement.md    # Assignment specification
+└── (code modules...)
 ```
+
+Data/
+├── taxonomy.json            # Condition taxonomy (used by default)
+├── problem_statement.md     # Assignment specification
+├── dev/                     # Unlabeled development set
+└── train/                   # Labeled training set (includes train/labels/)
+
