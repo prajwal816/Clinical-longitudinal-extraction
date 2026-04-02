@@ -85,7 +85,7 @@ def main() -> int:
             patient_id=pid,
             note_ids_in_order=note_ids,
             note_conditions=note_conditions,
-            notes=notes,
+            all_notes=notes,
             config=extractor_cfg,
         )
 

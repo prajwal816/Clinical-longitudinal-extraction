@@ -109,6 +109,23 @@ class OpenAICompatibleClient:
         """Human-readable token/cost/latency summary for logging."""
         return self.usage.summary()
 
+    # Backwards-compatible token usage fields (used by train/eval helpers).
+    @property
+    def total_calls(self) -> int:
+        return self.usage.total_calls
+
+    @property
+    def total_prompt_tokens(self) -> int:
+        return self.usage.prompt_tokens
+
+    @property
+    def total_completion_tokens(self) -> int:
+        return self.usage.completion_tokens
+
+    @property
+    def total_tokens(self) -> int:
+        return self.usage.total_tokens
+
     @retry(stop=stop_after_attempt(4), wait=wait_exponential_jitter(initial=1, max=30))
     def json_chat(self, *, system: str, user: str) -> dict[str, Any]:
         t0 = time.monotonic()

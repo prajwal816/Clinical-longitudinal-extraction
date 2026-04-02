@@ -47,6 +47,7 @@ class DetailedScore:
     onset_total: int = 0
     # Evidence quality (among matched conditions)
     evidence_note_recall_sum: float = 0.0  # fraction of GT evidence note_ids covered
+    evidence_note_precision_sum: float = 0.0  # fraction of predicted evidence note_ids that are in GT
     evidence_count: int = 0  # number of matched conditions with evidence comparison
 
     @property
@@ -65,13 +66,36 @@ class DetailedScore:
     def evidence_note_recall(self) -> float:
         return self.evidence_note_recall_sum / self.evidence_count if self.evidence_count else 0.0
 
+    @property
+    def evidence_note_precision(self) -> float:
+        return (
+            self.evidence_note_precision_sum / self.evidence_count if self.evidence_count else 0.0
+        )
+
+    # Aliases used by train/eval helpers and report text.
+    @property
+    def evidence_recall(self) -> float:
+        return self.evidence_note_recall
+
+    @property
+    def evidence_precision(self) -> float:
+        return self.evidence_note_precision
+
+    @property
+    def onset_accuracy(self) -> float:
+        return self.onset_exact_accuracy
+
+    @property
+    def onset_partial(self) -> float:
+        return self.onset_partial_accuracy
+
     def summary_line(self) -> str:
         return (
             f"{self.patient_id}: "
             f"P={self.condition_precision:.3f} R={self.condition_recall:.3f} F1={self.condition_f1:.3f} | "
             f"Status={self.status_accuracy:.3f} | "
             f"Onset(exact)={self.onset_exact_accuracy:.3f} Onset(partial)={self.onset_partial_accuracy:.3f} | "
-            f"EvidRecall={self.evidence_note_recall:.3f}"
+            f"EvidRecall={self.evidence_note_recall:.3f} EvidPrec={self.evidence_note_precision:.3f}"
         )
 
 
@@ -178,10 +202,13 @@ def compute_detailed_score(
         # Evidence note recall: fraction of GT evidence note_ids present in pred
         true_note_ids = {ev.note_id for ev in true_c.evidence}
         pred_note_ids = {ev.note_id for ev in pred_c.evidence}
-        if true_note_ids:
-            recall = len(true_note_ids & pred_note_ids) / len(true_note_ids)
-            score.evidence_note_recall_sum += recall
-            score.evidence_count += 1
+        recall = len(true_note_ids & pred_note_ids) / len(true_note_ids) if true_note_ids else 0.0
+        precision = (
+            len(true_note_ids & pred_note_ids) / len(pred_note_ids) if pred_note_ids else 0.0
+        )
+        score.evidence_note_recall_sum += recall
+        score.evidence_note_precision_sum += precision
+        score.evidence_count += 1
 
     return score
 
@@ -224,4 +251,10 @@ def macro_average_detailed(scores: Iterable[DetailedScore]) -> dict[str, float]:
         "onset_exact_accuracy": sum(s.onset_exact_accuracy for s in items) / n,
         "onset_partial_accuracy": sum(s.onset_partial_accuracy for s in items) / n,
         "evidence_note_recall": sum(s.evidence_note_recall for s in items) / n,
+        "evidence_note_precision": sum(s.evidence_note_precision for s in items) / n,
+        # Aliases expected by train.py and report text.
+        "evidence_recall": sum(s.evidence_note_recall for s in items) / n,
+        "evidence_precision": sum(s.evidence_note_precision for s in items) / n,
+        "onset_accuracy": sum(s.onset_exact_accuracy for s in items) / n,
+        "onset_partial": sum(s.onset_partial_accuracy for s in items) / n,
     }

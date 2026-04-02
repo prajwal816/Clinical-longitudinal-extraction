@@ -27,6 +27,56 @@ We are given longitudinal clinical notes per patient (2--13 notes), ordered chro
   \item include comprehensive evidence excerpts across notes with exact \texttt{note\_id}, \texttt{line\_no}, and verbatim \texttt{span}.
 \end{itemize}
 
+\section{Figures and Data Statistics}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.98\linewidth]{../assets/pipeline.png}
+\caption{End-to-end extraction pipeline (two-pass LLM + deterministic validation/hardening).}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.98\linewidth]{../assets/taxonomy_overview.png}
+\caption{Taxonomy overview: number of subcategories per category.}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.98\linewidth]{../assets/notes_per_patient_train_dev.png}
+\caption{Notes-per-patient distribution (train and dev).}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.98\linewidth]{../assets/conditions_per_patient_train.png}
+\caption{Label density (conditions per patient) using training labels.}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.98\linewidth]{../assets/label_category_distribution_train.png}
+\caption{Category distribution across training labels.}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.98\linewidth]{../assets/label_subcategory_top15_train.png}
+\caption{Top-15 subcategories in the training labels.}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.98\linewidth]{../assets/status_distribution_train.png}
+\caption{Condition status distribution in the training labels.}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.98\linewidth]{../assets/evidence_entries_histogram_train.png}
+\caption{Evidence density: number of evidence entries per condition in the training labels.}
+\end{figure}
+
 \section{System Design}
 
 The system is a \textbf{two-stage LLM extraction pipeline} with strict post-validation, deterministic evidence hardening, and fuzzy taxonomy recovery.
