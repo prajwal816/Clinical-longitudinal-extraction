@@ -1,108 +1,113 @@
 <h1 align="center">
-  <a href="./#gh-light-mode-only">
-    <img src="./.github/assets/clinical-nlp-logo-light-mode.svg" alt="Clinical NLP Extraction" />
-  </a>
-  <a href="./#gh-dark-mode-only">
-    <img src="./.github/assets/clinical-nlp-logo-dark-mode.svg" alt="Clinical NLP Extraction" />
-  </a>
+  <img src="./.github/assets/clinical-nlp-logo-light-mode.svg" alt="Clinical NLP Extraction" onerror="this.src='https://img.shields.io/badge/NLP_Extraction-Pipeline-blue?style=for-the-badge&logo=appveyor'"/>
 </h1>
 
 <p align="center">
-  <i align="center">Clinical condition extraction from longitudinal notes using an OpenAI-compatible LLM API.</i>
+  <i>A production-grade, two-pass LLM-based clinical NLP pipeline for extracting structured condition summaries from longitudinal patient notes.</i>
 </p>
-
-<h4 align="center">
-  <a href="./LICENSE">
-    <img src="https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square" alt="license" style="height: 20px;">
-  </a>
-  <a href="./requirements.txt">
-    <img src="https://img.shields.io/badge/python-3.10%2B-informational.svg?style=flat-square" alt="python" style="height: 20px;">
-  </a>
-  <a href="./Data/taxonomy.json">
-    <img src="https://img.shields.io/badge/taxonomy-strict-success.svg?style=flat-square" alt="taxonomy strict" style="height: 20px;">
-  </a>
-  <a href="./Data/problem_statement.md">
-    <img src="https://img.shields.io/badge/spec-problem_statement-important.svg?style=flat-square" alt="spec" style="height: 20px;">
-  </a>
-</h4>
 
 <p align="center">
-  <img src="./report/assets/pipeline.png" alt="pipeline" />
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square" alt="license"></a>
+  <a href="./requirements.txt"><img src="https://img.shields.io/badge/Python-3.10%2B-informational.svg?style=flat-square" alt="python"></a>
+  <a href="./Data/taxonomy.json"><img src="https://img.shields.io/badge/Taxonomy-Strict-success.svg?style=flat-square" alt="taxonomy strict"></a>
+  <a href="./Data/problem_statement.md"><img src="https://img.shields.io/badge/Spec-Problem_Statement-important.svg?style=flat-square" alt="spec"></a>
+  <img src="https://img.shields.io/badge/Status-Production_Ready-brightgreen.svg?style=flat-square" alt="Production status">
 </p>
 
-## Introduction
+<hr>
 
-This repository contains a **production-oriented clinical NLP pipeline** for the assignment in `Data/problem_statement.md`.
+## 📖 Introduction
 
-Given a patient’s longitudinal clinical notes (`text_0.md … text_N.md`), the system outputs a **structured condition summary** as one JSON file per patient:
+This repository contains a **highly robust clinical NLP pipeline** designed to tackle the complex task of medical condition extraction across longitudinal clinical notes, as defined in the [Problem Statement](./Data/problem_statement.md).
 
-- Strict mapping to the taxonomy in `Data/taxonomy.json`
-- Condition `status` as of the latest note where it appears
-- Condition `onset` per the assignment’s priority rules
-- Line-numbered `evidence` spans copied verbatim from the notes
+Given a chronological series of medical notes for a patient (e.g., `text_0.md`, `text_1.md`), the system synthesizes a **comprehensive structured condition summary** mapping back to a strict clinical taxonomy.
 
-## Repository layout
+### 🎯 Key Extractions Per Patient
+- **Condition Identification:** Deep extraction mapped exactly to standard taxonomies (`Data/taxonomy.json`).
+- **Clinical Status:** Determines if a condition is `active`, `resolved`, or `suspected` as of its *latest* mention.
+- **Onset Date Detection:** Infers or explicitly extracts the earliest chronological anchor for when a condition manifested.
+- **Verbatim Evidence:** Exact textual span extraction and linking (via `note_id` and `line_no`) grounding every condition in factual data.
 
+## ⚙️ Architecture & Pipeline Workings
+
+The system implements a resilient **two-pass processing architecture** ensuring high fidelity and robust fallback mechanisms against hallucinations.
+
+### 1. Pass One: Per-Note Extraction (`map`)
+Every note is parsed and sent through the LLM independently. This granular pass ensures:
+- Deep contextual understanding of isolated encounters.
+- Strict token-exact **evidence coercing**: Span text mapping exactly back to line numbers.
+- Fuzzy taxonomy recovery: Overcoming minor LLM spelling mistakes using `rapidfuzz` to securely map to valid categories/subcategories.
+
+### 2. Pass Two: Patient-Level Consolidation (`reduce`)
+Extracted condition candidates from chronologically ordered encounters are dynamically unified:
+- Resolves conflicts by propagating the most up-to-date **status** (based on document chronology).
+- Infers absolute **onset** anchors across differing time references.
+- **Deterministic Evidence Hardening:** Automatically spans the consolidated results against all notes to forcefully fill in missed evidence links missed by the LLM.
+
+<p align="center">
+  <img src="./report/assets/pipeline.png" alt="Architecture Pipeline diagram" />
+</p>
+
+## 📂 Repository Layout
+
+```text
+📦 NLP-Assignment
+ ┣ 📂 Clinical_Nlp_Extraction/  # Core framework: pipeline, utils, prompts, validation
+ ┃ ┣ 📜 data_loader.py          # Fast file parsing and sanitization
+ ┃ ┣ 📜 extractor.py            # The 2-pass engine & deterministic fallback logic
+ ┃ ┣ 📜 llm_client.py           # Robust OpenAI-compatible client wrapper
+ ┃ ┗ 📜 schemas.py              # Pydantic schemas enforcing extraction structures
+ ┣ 📂 Data/                     # Problem specs, taxonomy configurations & patient data
+ ┣ 📂 report/                   # Generated evaluation reports and artifacts
+ ┣ 📜 main.py                   # High-level pipeline CLI entrypoint
+ ┣ 📜 requirements.txt          # Python dependencies
+ ┗ 📜 README.md                 # Project documentation
 ```
-Clinical_Nlp_Extraction/   # Python package (pipeline implementation)
-Data/                      # Dataset + assignment spec + taxonomy (this folder should be pushed)
-report/                    # REPORT.md + Overleaf LaTeX + generated figures
-main.py                    # CLI entrypoint (evaluator runs this)
-requirements.txt           # Python dependencies
-```
 
-## Usage
+## 🚀 Getting Started
 
-### Install
+### Prerequisites
+
+Ensure you have Python 3.10+ installed.
 
 ```bash
+# Clone the repository and navigate inside
+cd NLP-Assignment
+
+# Install the required dependencies
 pip install -r requirements.txt
 ```
 
-### Environment variables (provided by evaluator)
+### Environment Configurations
 
-The pipeline uses an **OpenAI-compatible API** and reads:
+The pipeline natively interfaces with *any* **OpenAI API Compatible Endpoint** (e.g., standard OpenAI, OpenRouter, self-hosted vLLM). Set the context variables:
 
-- `OPENAI_BASE_URL`
-- `OPENAI_API_KEY`
-- `OPENAI_MODEL`
-
-### Run inference (real extraction)
-
-Create a patient list JSON (example `patients.json`):
-
-```json
-["patient_02", "patient_08", "patient_15"]
+```bash
+export OPENAI_BASE_URL="https://api.openai.com/v1" # Or custom endpoint
+export OPENAI_API_KEY="sk-..."
+export OPENAI_MODEL="gpt-4o-mini" # Or preferred model
 ```
 
-Run:
+## 🛠️ CLI Usage
+
+The primary entry point is `main.py`. The system exposes different operational execution environments based on validation needs.
+
+### 1. Perform Real Extraction (API Inference)
+To perform actual API calls leveraging your selected LLM:
 
 ```bash
 python main.py \
   --data-dir ./Data/dev \
-  --patient-list ./patients.json \
+  --patient-list ./patients_dev.json \
   --output-dir ./output_real \
   --cache-dir ./.cache_run \
-  --temperature 0
+  --temperature 0 \
+  --concurrency 4
 ```
+**Artifacts Generated**: Outputs `output_real/patient_XX.json` for every patient + `_manifest.json` tracker.
 
-Outputs:
-- `output_real/patient_XX.json` (one per patient)
-- `output_real/_manifest.json`
-
-### Validate outputs
-
-```bash
-python -m Clinical_Nlp_Extraction.validate_outputs \
-  --output-dir ./output_real \
-  --taxonomy-path ./Data/taxonomy.json
-```
-
-## Tests / sanity checks
-
-### Dry-run (no API calls)
-
-Dry-run validates CLI wiring and output formatting without hitting the LLM:
+### 2. Perform a Dry-Run (Fast Wiring Test)
+Ensure internal path wiring and validation mechanics operate correctly without hitting the billable LLM endpoint:
 
 ```bash
 python main.py \
@@ -112,44 +117,21 @@ python main.py \
   --dry-run
 ```
 
-Expected:
-- `output_dry/patient_XX.json` with `"conditions": []`
-- No token usage (no HTTP calls)
-
-### API run (OpenRouter example)
-
-Set environment variables (example):
+### 3. Data Validation
+To rigorously cross-examine the `output_real` extraction data strictly against the definitions mapped inside the `taxonomy.json`:
 
 ```bash
-export OPENAI_BASE_URL="https://openrouter.ai/api/v1"
-export OPENAI_API_KEY="***"
-export OPENAI_MODEL="meta-llama/llama-3-8b-instruct"
+python -m Clinical_Nlp_Extraction.validate_outputs \
+  --output-dir ./output_real \
+  --taxonomy-path ./Data/taxonomy.json
 ```
 
-Run with a fresh cache directory to ensure calls are made:
+## 🧪 Advanced Recovery Mechanisms
+- **LLM Fail-Safes:** If LLM merging fails or returns junk during Pass Two (patient consolidation), the system gracefully regresses to an intelligent `_deterministic_fallback()` utilizing string deduplication and rule-based chronological prioritization to guarantee robust outputs.
+- **Smart Evidence Linking:** Identifies instances when an LLM drops evidence, explicitly searching line histories using `rapidfuzz` to construct missing context.
 
-```bash
-python main.py \
-  --data-dir ./Data/dev \
-  --patient-list ./patients_dev.json \
-  --output-dir ./output_api_only \
-  --cache-dir ./.cache_api_only \
-  --temperature 0 \
-  --verbose
-```
+## 🛡️ License & Contributing Notes
 
-Expected:
-- HTTP `POST .../chat/completions` logs
-- A non-zero token usage summary at the end (e.g., “LLM Usage: N calls | … tokens …”)
+Distributed under the MIT License. See `LICENSE` for more information.
 
-## Notes on pushing to git
-
-The `Data/` folder **should be pushed** (it contains the assignment spec, taxonomy, and dataset).
-
-Do **not** push:
-- `output*/`, `out_*/` (generated predictions)
-- `.cache*/` (LLM cache)
-- `.env` (credentials)
-
-These are ignored via `.gitignore`.
-
+> **Important**: The `Data/` folder operates as the source of truth for problem criteria and must remain version-controlled. Outputs folders like `output*/` or `.cache*/` are safely ignored by git.
